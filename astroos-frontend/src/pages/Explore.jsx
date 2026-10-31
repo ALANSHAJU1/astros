@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowDownWideNarrow,
+  ArrowRight,
   Database,
   LoaderCircle,
   RefreshCw,
@@ -48,7 +49,7 @@ export default function Explore() {
 
   const PAGE_SIZE = 100;
 
-  async function loadEvents({ reset = false } = {}) {
+  const loadEvents = useCallback(async ({ reset = false } = {}) => {
     if (reset) {
       setLoading(true);
       setError("");
@@ -70,7 +71,7 @@ export default function Explore() {
 
       const adapted = data.map(adaptEvent);
 
-      setEvents((previous) => reset ? adapted : [...previous, ...adapted]);
+      setEvents((previous) => (reset ? adapted : [...previous, ...adapted]));
       setSkip(offset + data.length);
       setHasMore(data.length === PAGE_SIZE);
       setRequiresLogin(false);
@@ -91,10 +92,40 @@ export default function Explore() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }
+  }, [skip]);
 
   useEffect(() => {
-    loadEvents({ reset: true });
+    let mounted = true;
+    eventService
+      .getEvents({ skip: 0, limit: PAGE_SIZE })
+      .then((data) => {
+        if (!mounted) return;
+        if (Array.isArray(data)) {
+          setEvents(data.map(adaptEvent));
+          setSkip(data.length);
+          setHasMore(data.length === PAGE_SIZE);
+        }
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          setRequiresLogin(true);
+          setError("Authentication is required to access the event catalogue.");
+        } else {
+          setError(
+            err.response?.data?.detail ||
+            err.message ||
+            "Unable to load celestial events."
+          );
+        }
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const categories = useMemo(() => {
@@ -169,7 +200,7 @@ export default function Explore() {
           <div className="explore-hero-orbit orbit-a" />
           <div className="explore-hero-orbit orbit-b" />
           <div className="explore-hero-planet" />
-          <div className="explore-hero-star">?</div>
+          <div className="explore-hero-star">✦</div>
         </div>
       </section>
 
@@ -269,6 +300,8 @@ export default function Explore() {
               onClick={() => {
                 setSearch("");
                 setActiveCategory("All Objects");
+                setDateFrom("");
+                setDateTo("");
               }}
             >
               Clear filters
@@ -284,7 +317,7 @@ export default function Explore() {
           <p>Generate an observation session using AstroOS intelligence.</p>
         </div>
         <button onClick={() => navigate("/planner")}>
-          Open planner <span>?</span>
+          Open planner <ArrowRight size={15} />
         </button>
       </section>
 

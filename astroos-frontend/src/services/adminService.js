@@ -7,4 +7,16 @@ export const adminService = {
     });
     return response.data;
   },
+
+  async updateRole(userId, role) {
+    const response = await api.patch(`/api/v1/admin/users/${userId}/role`, { role });
+    return response.data;
+  },
+
+  async updateStatus(userId, isActive) {
+    const response = await api.patch(`/api/v1/admin/users/${userId}/status`, {
+      is_active: isActive,
+    });
+    return response.data;
+  },
 };

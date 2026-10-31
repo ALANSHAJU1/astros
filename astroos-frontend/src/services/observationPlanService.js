@@ -1,12 +1,16 @@
 import api from "./api";
 
 export function parseObservationPlan(data = {}) {
-  const recommendations = data.recommendations || {};
+  const recommendations = data.recommendations || data.recommendation || {};
 
   return {
     status: data.status || "unknown",
-    eventCount: data.event_count ?? 0,
+    eventCount:
+      data.event_count ??
+      data.database_events_found ??
+      (data.ranked_events ? data.ranked_events.length : 0),
     ranked:
+      data.ranked_events ||
       recommendations.ranked_events ||
       recommendations.rankedEvents ||
       [],
@@ -22,7 +26,13 @@ export function parseObservationPlan(data = {}) {
       [],
     details: recommendations.details || recommendations.events || [],
     summary: recommendations.summary || {},
-    explanation: recommendations.explanation || recommendations.overall_explanation,
+    explanation:
+      recommendations.explanation ||
+      recommendations.overall_explanation ||
+      data.explanation,
+    databaseEventsFound: data.database_events_found ?? null,
+    databaseEventsRejected: data.database_events_rejected ?? [],
+    dataQuality: data.data_quality || {},
     raw: data,
   };
 }

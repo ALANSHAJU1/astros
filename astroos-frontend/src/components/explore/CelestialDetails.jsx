@@ -1,4 +1,12 @@
-import { ArrowLeft, CalendarDays, Compass, MapPin, Telescope, X } from "lucide-react";
+import {
+  ArrowLeft,
+  CalendarDays,
+  Compass,
+  Eye,
+  MapPin,
+  Telescope,
+  X,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { formatEventDate } from "../../services/eventAdapter";
 
@@ -69,25 +77,41 @@ export default function CelestialDetails({ object, onClose }) {
             <div>
               <strong>Observation information</strong>
               <p>
-                Catalogue records do not include live visibility scores. Use the
-                Observation Planner or Visibility Intelligence pages to request
-                assessments from the backend.
+                Catalogue records represent stored database events. Use the
+                Observation Planner or Visibility Intelligence to evaluate
+                live visibility scores for your observer coordinates.
               </p>
             </div>
           </div>
 
-          <button
-            className="primary-action"
-            onClick={() => {
-              onClose();
-              navigate("/planner", {
-                state: { selectedTarget: object.name },
-              });
-            }}
-          >
-            <CalendarDays size={17} />
-            Plan an observation
-          </button>
+          <div style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+            <button
+              className="primary-action"
+              style={{ flex: "1 1 180px", justifyContent: "center" }}
+              onClick={() => {
+                onClose();
+                navigate("/planner", {
+                  state: { selectedTarget: object.name },
+                });
+              }}
+            >
+              <CalendarDays size={17} />
+              Plan observation
+            </button>
+            <button
+              className="secondary-action"
+              style={{ flex: "1 1 180px", justifyContent: "center" }}
+              onClick={() => {
+                onClose();
+                navigate("/visibility", {
+                  state: { selectedEventId: object.id },
+                });
+              }}
+            >
+              <Eye size={17} />
+              Assess visibility
+            </button>
+          </div>
         </div>
       </section>
     </div>

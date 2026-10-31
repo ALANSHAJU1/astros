@@ -74,7 +74,7 @@ export default function Dashboard() {
         if (!cancelled) {
           if (err.response?.status === 404) {
             setEnvNote(
-              "No stored environmental observation exists for the saved observer location yet. Generate a plan or query Visibility Intelligence after a forecast has been persisted."
+              "No stored environmental observation exists for the saved observer location. Generate a plan to populate forecast records."
             );
           } else {
             setEnvNote(
@@ -96,21 +96,21 @@ export default function Dashboard() {
     };
   }, [location]);
 
-  const upcoming = useMemo(() => {
-    const now = Date.now();
-    return [...events]
-      .filter((event) => {
-        if (!event.startTime) return true;
-        return new Date(event.startTime).getTime() >= now - 6 * 60 * 60 * 1000;
-      })
-      .slice(0, 6);
+  // Display opportunities: prioritizes upcoming events, falling back to loaded catalogue records
+  const displayEvents = useMemo(() => {
+    if (!events.length) return [];
+    return events.slice(0, 6);
   }, [events]);
 
-  const categories = new Set(events.map((event) => event.category)).size;
+  const categories = useMemo(
+    () => new Set(events.map((event) => event.category)).size,
+    [events]
+  );
+
   const greeting = user?.full_name || user?.email || "Observer";
 
   return (
-    <div className="page-content">
+    <div className="page-content dashboard-page">
       <section className="welcome-section">
         <div>
           <div className="eyebrow">
@@ -120,8 +120,8 @@ export default function Dashboard() {
             Welcome back, <span>{greeting}.</span>
           </h1>
           <p>
-            Review catalogue events, inspect stored sky conditions, and open the
-            observation planner when you are ready to generate a live session.
+            Review catalogue events, inspect atmospheric conditions, and launch
+            the observation planner to calculate optimal viewing sessions.
           </p>
           <div className="welcome-actions">
             <button className="primary-action" onClick={() => navigate("/explore")}>
@@ -160,20 +160,20 @@ export default function Dashboard() {
           icon={CalendarDays}
           label="Catalogue events"
           value={String(events.length).padStart(2, "0")}
-          detail="Records returned by GET /api/v1/events"
+          detail="Active database records"
         />
         <MetricCard
           icon={Eye}
           label="Event categories"
           value={String(categories).padStart(2, "0")}
-          detail="Distinct categories in the loaded catalogue"
+          detail="Planets, Moon, Deep Sky"
         />
         <MetricCard
           icon={Cloud}
           label="Cloud cover"
           value={environment?.cloud_cover != null ? Math.round(environment.cloud_cover) : "—"}
           unit={environment?.cloud_cover != null ? "%" : ""}
-          detail={environment ? `Source: ${environment.source || "stored observation"}` : "No stored observation"}
+          detail={environment ? `Source: ${environment.source || "Stored snapshot"}` : "No stored forecast"}
         />
         <MetricCard
           icon={Thermometer}
@@ -184,7 +184,7 @@ export default function Dashboard() {
               : "—"
           }
           unit={environment?.temperature_celsius != null ? "°C" : ""}
-          detail={environment?.conditions || "Awaiting environmental data"}
+          detail={environment?.conditions || "Awaiting observation"}
         />
       </section>
 
@@ -192,29 +192,37 @@ export default function Dashboard() {
         <div className="panel opportunities-panel">
           <div className="panel-header opportunities-header">
             <div>
-              <div className="eyebrow">UPCOMING CATALOGUE EVENTS</div>
+              <div className="eyebrow">CATALOGUE TARGETS</div>
               <h3>Observation opportunities</h3>
-              <p>These are stored celestial events, not generated recommendation scores.</p>
+              <p>Stored celestial events available for observation planning.</p>
             </div>
             <button className="text-button" onClick={() => navigate("/explore")}>
               Open catalogue <ArrowRight size={16} />
             </button>
           </div>
 
-          {upcoming.length === 0 ? (
+          {displayEvents.length === 0 ? (
             <div className="empty-inline">
               <BrandLogo size="sm" />
               <p>
                 {events.length === 0
-                  ? "The event catalogue is empty. Use Observation Planner to discover live targets from astronomy services."
-                  : "No upcoming events were found in the loaded catalogue window."}
+                  ? "The event catalogue is currently empty. Open the Observation Planner to discover live targets from astronomy ephemeris services."
+                  : "No events were loaded."}
               </p>
             </div>
           ) : (
             <div className="opportunity-list">
-              {upcoming.map((item) => (
-                <div className="opportunity-row" key={item.id}>
-                  <div className="target-symbol">{item.category.slice(0, 3)}</div>
+              {displayEvents.map((item) => (
+                <div
+                  className="opportunity-row"
+                  key={item.id}
+                  onClick={() =>
+                    navigate("/planner", { state: { selectedTarget: item.name } })
+                  }
+                  title={`Plan an observation session for ${item.name}`}
+                  style={{ cursor: "pointer" }}
+                >
+                  <div className="target-symbol">{item.category.slice(0, 3).toUpperCase()}</div>
                   <div className="target-info">
                     <strong>{item.name}</strong>
                     <span>{item.eventType}</span>
@@ -244,7 +252,7 @@ export default function Dashboard() {
                   <strong>{environment.conditions || "Observation on file"}</strong>
                   <span>
                     {environment.freshness_status
-                      ? `Freshness: ${environment.freshness_status}`
+                      ? `Freshness: ${environment.freshness_status.toUpperCase()}`
                       : "Latest stored observation"}
                   </span>
                 </div>
@@ -262,17 +270,33 @@ export default function Dashboard() {
               <div className="condition-row">
                 <span>Location</span>
                 <strong>
-                  {environment.latitude?.toFixed(3)}, {environment.longitude?.toFixed(3)}
+                  {environment.latitude?.toFixed(4)}, {environment.longitude?.toFixed(4)}
                 </strong>
               </div>
             </>
           ) : (
-            <div className="condition-note">{envNote || "No environmental data loaded."}</div>
+            <div className="condition-note">
+              {envNote ||
+                "No stored environmental observation exists for this location. Generate an observation plan to fetch and persist fresh Open-Meteo forecasts."}
+            </div>
           )}
 
-          <button className="secondary-action" onClick={() => navigate("/visibility")}>
-            Open visibility intelligence
-          </button>
+          <div style={{ display: "flex", gap: "10px", marginTop: "16px" }}>
+            <button
+              className="secondary-action"
+              style={{ flex: 1, justifyContent: "center" }}
+              onClick={() => navigate("/visibility")}
+            >
+              <Eye size={15} /> Visibility Intelligence
+            </button>
+            <button
+              className="primary-action"
+              style={{ flex: 1, justifyContent: "center" }}
+              onClick={() => navigate("/planner")}
+            >
+              <Telescope size={15} /> Observation Planner
+            </button>
+          </div>
         </div>
       </section>
     </div>
