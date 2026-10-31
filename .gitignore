@@ -1,0 +1,45 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+*.egg-info/
+*.dist-info/
+__pycache__/
+*.py[cod]
+
+# Test / coverage artefacts
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.prof
+*.log
+
+# Build / distribution
+build/
+dist/
+*.egg
+*.whl
+
+# IDE / editor
+.vscode/
+.idea/
+*.suo
+*.swp
+*.tmp
+*.bak
+
+# OS specific
+Thumbs.db
+.DS_Store
+ehthumbs.db
+Desktop.ini
+
+# Sensitive configuration
+*.env
+!*.env.example
+
+# Local data / generated files
+*.sqlite
+*.db
+*.db-journal
