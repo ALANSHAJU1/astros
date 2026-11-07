@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Dict, List, Optional
 import app.services.jpl_astronomy_adapter as jpl_adapter
+from app.services.observation_duration_policy import resolve_event_duration
 from app.services.catalog_event_discovery_service import discover_catalog_events
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,83 @@ class ObservationPlanRequest(BaseModel):
         }
     )
 
+
+def _extract_target_id(event: Dict[str, Any]) -> Optional[str]:
+    """Extract a Horizons target ID from a planner candidate."""
+    additional = event.get("additional_data") or {}
+    metadata = event.get("metadata") or {}
+
+    target_id = (
+        additional.get("target_id")
+        or metadata.get("target_id")
+        or event.get("target_id")
+    )
+
+    return str(target_id).strip() if target_id is not None else None
+
+
+def _normalize_target_id(target_id: str) -> str:
+    return target_id.strip().rstrip(";").strip()
+
+
+def _enrich_candidates_with_horizons(events, horizons_events):
+    """Merge actual Horizons elevation facts into matching planner candidates."""
+    horizons_by_id = {}
+
+    for horizons_event in horizons_events:
+        metadata = horizons_event.get("metadata") or {}
+        facts = metadata.get("nasa_horizons_facts") or {}
+        target_id = facts.get("target_id") or horizons_event.get("target_id")
+
+        if target_id is not None:
+            horizons_by_id[_normalize_target_id(str(target_id))] = horizons_event
+
+    for candidate in events:
+        target_id = _extract_target_id(candidate)
+
+        if not target_id:
+            continue
+
+        horizons_event = horizons_by_id.get(_normalize_target_id(target_id))
+
+        if not horizons_event:
+            continue
+
+        horizons_metadata = horizons_event.get("metadata") or {}
+        horizons_facts = horizons_metadata.get("nasa_horizons_facts") or {}
+        derived = horizons_metadata.get("derived_astronomical_values") or {}
+
+        peak_elevation = (
+            horizons_facts.get("peak_elevation_deg")
+            if horizons_facts.get("peak_elevation_deg") is not None
+            else derived.get("peak_elevation_deg")
+        )
+
+        if peak_elevation is None:
+            continue
+
+        candidate_metadata = candidate.setdefault("metadata", {})
+        candidate_facts = candidate_metadata.setdefault(
+            "nasa_horizons_facts", {}
+        )
+
+        candidate_facts.update(horizons_facts)
+        candidate_facts["peak_elevation_deg"] = peak_elevation
+
+        candidate_derived = candidate_metadata.setdefault(
+            "derived_astronomical_values", {}
+        )
+        candidate_derived.update(derived)
+        candidate_derived["peak_elevation_deg"] = peak_elevation
+
+        candidate["peak_elevation_deg"] = peak_elevation
+
+        additional = candidate.setdefault("additional_data", {})
+        additional["peak_elevation_deg"] = peak_elevation
+
+    return events
+
+
 @router.post("/api/v1/observation-plans/generate")
 async def generate_observation_plan(
     request_body: ObservationPlanRequest,
@@ -157,6 +235,8 @@ async def generate_observation_plan(
     """
     body = request_body.model_dump()
     events: List[Dict[str, Any]] = body.get("events") or []
+    client_events_received = len(events) if isinstance(events, list) else 0
+    discovered_events_count = 0
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="'events' must be a list.")
     # ----- Input extraction -------------------------------------------------
@@ -169,6 +249,50 @@ async def generate_observation_plan(
     start_dt: datetime | None = _parse_ts(session_start) if session_start else None
     end_dt: datetime | None = _parse_ts(session_end) if session_end else None
     available_duration = session.get("available_duration_minutes")
+
+    # ----- Enrich supplied asteroid/NEO candidates using JPL Horizons --------
+    if events and latitude is not None and longitude is not None \
+            and session_start and session_end:
+
+        target_ids = []
+
+        for event in events:
+            category = str(
+                event.get("category") or event.get("event_type") or ""
+            ).lower()
+
+            if "asteroid" in category or "neo" in category or "near-earth" in category:
+                target_id = _extract_target_id(event)
+
+                if target_id and target_id not in target_ids:
+                    target_ids.append(target_id)
+
+        if target_ids:
+            try:
+                horizons_events = jpl_adapter.fetch_events_from_jpl(
+                    latitude=float(latitude),
+                    longitude=float(longitude),
+                    start_time_iso=session_start,
+                    end_time_iso=session_end,
+                    target_ids=target_ids,
+                )
+
+                events = _enrich_candidates_with_horizons(
+                    events,
+                    horizons_events,
+                )
+
+                logger.info(
+                    "[ObservationPlans] Enriched supplied candidates with Horizons data: %d target(s), %d returned pass(es).",
+                    len(target_ids),
+                    len(horizons_events),
+                )
+
+            except Exception as exc:
+                logger.warning(
+                    "[ObservationPlans] Optional Horizons candidate enrichment failed: %s",
+                    exc,
+                )
 
     # ----- Automatic discovery when no events supplied ----------------------
     if not events:
@@ -233,6 +357,31 @@ async def generate_observation_plan(
             # Catalog discovery failures are non-fatal; log and continue with JPL results only.
             logger.warning("[ObservationPlans] Catalog event discovery error (non-fatal): %s", exc)
 
+    if client_events_received == 0:
+        discovered_events_count = len(events)
+
+    # Resolve missing durations from the shared event-type policy.
+    # The session's available_duration_minutes is only a total scheduling budget.
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        explicit_duration = (
+            event.get("required_duration_minutes")
+            if event.get("required_duration_minutes") is not None
+            else event.get("duration_minutes")
+        )
+        try:
+            resolved_duration = resolve_event_duration(
+                event.get("event_type") or event.get("category") or event.get("type"),
+                explicit_duration,
+            )
+        except ValueError:
+            # Leave invalid explicit values intact so request validation reports them.
+            continue
+        if resolved_duration is not None:
+            event["duration_minutes"] = resolved_duration
+            event["required_duration_minutes"] = resolved_duration
+
     astronomy_adapter: BaseAstronomyAdapter = HathimAstronomyAdapter()
     # Initialize environmental service and fetch weather observations
     env_service = EnvironmentalService()
@@ -257,6 +406,7 @@ async def generate_observation_plan(
 
     enriched_events: List[Dict[str, Any]] = []
     for ev in events:
+
         lat = ev.get("latitude") if ev.get("latitude") is not None else latitude
         lon = ev.get("longitude") if ev.get("longitude") is not None else longitude
         if lat is None or lon is None:
@@ -268,9 +418,6 @@ async def generate_observation_plan(
             ev["window_start"] = session_start
         if session_end and not ev.get("window_end") and not ev.get("end_time"):
             ev["window_end"] = session_end
-        if available_duration and not ev.get("required_duration_minutes") and not ev.get("duration_minutes"):
-            ev["required_duration_minutes"] = available_duration
-
         # If event already has complete pre-assessed scores, preserve them
         prior_vis = ev.get("visibility_score")
         prior_weather = ev.get("weather_score")
@@ -340,61 +487,17 @@ async def generate_observation_plan(
                 "viewing_window_end": ev_end,
             }
             assessment = evaluate_event_visibility(**eval_kwargs)
-            # Populate assessment fields, distinguishing genuine 0.0 from None (missing/unavailable)
-            assessment_status = getattr(assessment, "status", None)
-            if assessment_status != "unavailable":
-                ev["visibility_score"] = assessment.visibility_score
-                ev["environmental_score"] = assessment.environmental_score
-                ev["weather_score"] = assessment.environmental_score
-                ev["astronomical_score"] = assessment.astronomical_score
-                ev["assessment_status"] = assessment_status or "success"
-                ev["quality_label"] = getattr(assessment, "quality_label", "Good")
-                ev["limitations"] = getattr(assessment, "limitations", [])
-            else:
-                # If assessment was unavailable, check if the event had pre-assessed scores or derived values
-                prior_vis = ev.get("visibility_score")
-                prior_weather = ev.get("weather_score")
-                prior_status = ev.get("assessment_status")
+            # Always use the assessment produced by this backend request.
+            assessment_status = getattr(assessment, "status", "unavailable")
 
-                if prior_vis is not None and prior_weather is not None:
-                    # Preserve valid pre-assessed scores
-                    ev["assessment_status"] = prior_status or "complete"
-                    ev["environmental_score"] = prior_weather
-                    ev["weather_score"] = prior_weather
-                    ev["visibility_score"] = prior_vis
-                    if ev.get("astronomical_score") is None:
-                        ev["astronomical_score"] = prior_vis
-                    from app.services.visibility_scoring_engine import score_to_quality_and_decision
-                    ev["quality_label"], _ = score_to_quality_and_decision(prior_vis)
-                    ev["limitations"] = getattr(assessment, "limitations", [])
-                else:
-                    # Derived astronomical fallback
-                    derived = (
-                        ev.get("metadata", {})
-                        .get("derived_astronomical_values", {})
-                        .get("computed_visibility_score")
-                    )
-                    if derived is not None:
-                        try:
-                            ev["astronomical_score"] = float(derived)
-                            ev["visibility_score"] = float(derived)
-                            ev["assessment_status"] = "partial_success"
-                            from app.services.visibility_scoring_engine import score_to_quality_and_decision
-                            ev["quality_label"], _ = score_to_quality_and_decision(ev["visibility_score"])
-                        except (ValueError, TypeError):
-                            ev["astronomical_score"] = None
-                            ev["visibility_score"] = None
-                            ev["assessment_status"] = "unavailable"
-                            ev["quality_label"] = "Unavailable"
-                    else:
-                        ev["astronomical_score"] = None
-                        ev["visibility_score"] = None
-                        ev["assessment_status"] = "unavailable"
-                        ev["quality_label"] = "Unavailable"
+            ev["visibility_score"] = assessment.visibility_score
+            ev["environmental_score"] = assessment.environmental_score
+            ev["weather_score"] = assessment.environmental_score
+            ev["astronomical_score"] = assessment.astronomical_score
 
-                    ev["environmental_score"] = assessment.environmental_score
-                    ev["weather_score"] = assessment.environmental_score
-                    ev["limitations"] = getattr(assessment, "limitations", [])
+            ev["assessment_status"] = assessment_status
+            ev["quality_label"] = assessment.quality_label
+            ev["limitations"] = assessment.limitations or []
 
             # Resolve preference score: event-level overrides session-level; preserve None if both omitted
             session_pref = session.get("preference_score")
@@ -428,6 +531,10 @@ async def generate_observation_plan(
 
     intelligence_req = body.copy()
     intelligence_req["events"] = enriched_events
+    intelligence_req["event_origin_counts"] = {
+        "client_events_received": client_events_received,
+        "events_discovered": discovered_events_count,
+    }
 
     # Ensure required session fields for backend processing
     session_req = intelligence_req.get("session", {})

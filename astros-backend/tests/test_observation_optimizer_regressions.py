@@ -28,7 +28,7 @@ def test_exact_fit_observation_is_scheduled():
         "recommendation_score": 90,
         "window_start": "2026-10-26T19:00:00+00:00",
         "window_end": "2026-10-26T20:00:00+00:00",
-        "duration_minutes": 45,
+        "duration_minutes": 60,
     }
     result = optimize_observation_schedule(
         ranked_events=[event],

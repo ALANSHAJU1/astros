@@ -1,23 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
 import {
   AlertCircle,
+  Binoculars,
   CalendarDays,
+  Camera,
   CheckCircle2,
   Clock,
+  Eye,
   Info,
   LoaderCircle,
   MapPin,
   Sparkles,
+  Sun,
   Telescope,
-  XCircle,
+  XCircle
 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import BrandLogo from "../components/BrandLogo";
-import { eventService } from "../services/eventService";
+import LocationPicker from "../components/LocationPicker";
+import { getCelestialImage } from "../services/celestialImages";
 import { adaptEvent } from "../services/eventAdapter";
+import { eventService } from "../services/eventService";
 import { observationPlanService } from "../services/observationPlanService";
+import { CELESTIAL_TARGET_CATALOG } from "../services/predictionService";
 import { getApiErrorMessage } from "../utils/apiErrors";
+import { getTopocentricAltitude } from "../utils/astronomyCoordinates";
 import {
   formatClock,
   formatDateTime,
@@ -29,11 +37,12 @@ import {
   loadObserverLocation,
   saveObserverLocation,
 } from "../utils/location";
+import { getObservationGuide } from "../utils/observationGuide";
 
 const GOAL_OPTIONS = [
   { value: "general", label: "General Stargazing" },
-  { value: "deep_sky", label: "Deep-Sky Objects (Nebulae & Galaxies)" },
   { value: "planetary", label: "Planetary & Lunar" },
+  { value: "deep_sky", label: "Deep-Sky Objects (Nebulae & Galaxies)" },
   { value: "meteor_shower", label: "Meteor Showers & Transients" },
   { value: "astrophotography", label: "Astrophotography High-Contrast" },
 ];
@@ -99,16 +108,29 @@ export default function Planner() {
 
   const [latitude, setLatitude] = useState(storedLocation.latitude);
   const [longitude, setLongitude] = useState(storedLocation.longitude);
+  const [locationName, setLocationName] = useState(storedLocation.name || "");
   const [sessionStart, setSessionStart] = useState(windowDefaults.start);
   const [sessionEnd, setSessionEnd] = useState(windowDefaults.end);
   const [duration, setDuration] = useState(180);
   const [goal, setGoal] = useState("general");
-  const [selectedEventId, setSelectedEventId] = useState("");
+  const [selectedTargetKey, setSelectedTargetKey] = useState("");
   const [catalogue, setCatalogue] = useState([]);
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expandedTarget, setExpandedTarget] = useState(null);
+
+  // Category inclusion checkboxes for automatic discovery
+  const [includePlanets, setIncludePlanets] = useState(true);
+  const [includeAsteroids, setIncludeAsteroids] = useState(true);
+  const [includeComets, setIncludeComets] = useState(true);
+  const [includeDeepSky, setIncludeDeepSky] = useState(true);
+  const [includeMeteorShowers, setIncludeMeteorShowers] = useState(true);
+  const [includeSolarEclipses, setIncludeSolarEclipses] = useState(true);
+  const [includeLunarEclipses, setIncludeLunarEclipses] = useState(true);
+
+  // Filter for rendered opportunities
+  const [opportunityFilter, setOpportunityFilter] = useState("all");
 
   useEffect(() => {
     let active = true;
@@ -116,15 +138,78 @@ export default function Planner() {
       .getEvents({ skip: 0, limit: 100 })
       .then((data) => {
         if (!active) return;
-        const adapted = Array.isArray(data) ? data.map(adaptEvent) : [];
+        const adapted = Array.isArray(data) ? data.map(adaptEvent).filter(Boolean) : [];
         setCatalogue(adapted);
 
         const targetName = routerLocation.state?.selectedTarget;
-        if (targetName && adapted.length > 0) {
+        if (targetName) {
+          // Check if in catalogue
           const match = adapted.find(
             (event) => event.name.toLowerCase() === String(targetName).toLowerCase()
           );
-          if (match) setSelectedEventId(match.id);
+          if (match) {
+            setSelectedTargetKey(`db_${match.id}`);
+          } else {
+            // Check in predicted catalog
+            for (const p of CELESTIAL_TARGET_CATALOG.planets) {
+              if (p.name.toLowerCase() === String(targetName).toLowerCase()) {
+                setSelectedTargetKey(`pred_planet_${p.name}`);
+                break;
+              }
+            }
+            for (const a of CELESTIAL_TARGET_CATALOG.asteroids) {
+              if (a.name.toLowerCase() === String(targetName).toLowerCase()) {
+                setSelectedTargetKey(`pred_asteroid_${a.name}`);
+                break;
+              }
+            }
+            for (const c of CELESTIAL_TARGET_CATALOG.comets) {
+              if (c.name.toLowerCase() === String(targetName).toLowerCase()) {
+                setSelectedTargetKey(`pred_comet_${c.name}`);
+                break;
+              }
+            }
+            for (const d of (CELESTIAL_TARGET_CATALOG.deep_sky || [])) {
+              if (
+                d.name.toLowerCase().includes(String(targetName).toLowerCase()) ||
+                String(targetName).toLowerCase().includes(d.name.toLowerCase()) ||
+                String(targetName).toLowerCase().includes(d.catalog_id?.toLowerCase())
+              ) {
+                setSelectedTargetKey(`pred_deep_sky_${d.name}`);
+                break;
+              }
+            }
+            for (const m of (CELESTIAL_TARGET_CATALOG.meteor_showers || [])) {
+              if (
+                m.name.toLowerCase().includes(String(targetName).toLowerCase()) ||
+                String(targetName).toLowerCase().includes(m.name.toLowerCase()) ||
+                String(targetName).toLowerCase().includes(m.catalog_id?.toLowerCase())
+              ) {
+                setSelectedTargetKey(`pred_meteor_${m.name}`);
+                break;
+              }
+            }
+            for (const s of (CELESTIAL_TARGET_CATALOG.solar_eclipses || [])) {
+              if (
+                s.name.toLowerCase().includes(String(targetName).toLowerCase()) ||
+                String(targetName).toLowerCase().includes(s.name.toLowerCase()) ||
+                String(targetName).toLowerCase().includes(s.catalog_id?.toLowerCase())
+              ) {
+                setSelectedTargetKey(`pred_solar_${s.name}`);
+                break;
+              }
+            }
+            for (const l of (CELESTIAL_TARGET_CATALOG.lunar_eclipses || [])) {
+              if (
+                l.name.toLowerCase().includes(String(targetName).toLowerCase()) ||
+                String(targetName).toLowerCase().includes(l.name.toLowerCase()) ||
+                String(targetName).toLowerCase().includes(l.catalog_id?.toLowerCase())
+              ) {
+                setSelectedTargetKey(`pred_lunar_${l.name}`);
+                break;
+              }
+            }
+          }
         }
       })
       .catch(() => {
@@ -136,13 +221,8 @@ export default function Planner() {
     };
   }, [routerLocation.state]);
 
-  const selectedEvent = useMemo(
-    () => catalogue.find((event) => event.id === selectedEventId),
-    [catalogue, selectedEventId]
-  );
-
   async function handleGenerate(event) {
-    event.preventDefault();
+    if (event) event.preventDefault();
     setError("");
     setPlan(null);
     setExpandedTarget(null);
@@ -170,8 +250,240 @@ export default function Planner() {
       return;
     }
 
-    saveObserverLocation({ latitude: lat, longitude: lon });
+    saveObserverLocation({ latitude: lat, longitude: lon, name: locationName });
     setLoading(true);
+
+    // Build event list
+    const candidateEvents = [];
+
+    if (selectedTargetKey.startsWith("db_")) {
+      const dbId = selectedTargetKey.replace("db_", "");
+      const found = catalogue.find((item) => item.id === dbId);
+      if (found) {
+        candidateEvents.push({
+          event_id: found.id,
+          name: found.name,
+          category: found.category,
+          event_type: found.eventType,
+          window_start: startIso,
+          window_end: endIso,
+          latitude: found.latitude ?? lat,
+          longitude: found.longitude ?? lon,
+        });
+      }
+    } else if (selectedTargetKey.startsWith("pred_")) {
+      // Specific predicted target selected
+      let foundBody = null;
+      for (const list of Object.values(CELESTIAL_TARGET_CATALOG)) {
+        foundBody = list.find((b) => selectedTargetKey.endsWith(`_${b.name}`));
+        if (foundBody) break;
+      }
+      if (foundBody) {
+        candidateEvents.push({
+          name: foundBody.name,
+          category: foundBody.category,
+          event_type: foundBody.event_type,
+          start_time: startIso,
+          end_time: endIso,
+          latitude: lat,
+          longitude: lon,
+          additional_data: {
+            target_id: foundBody.target_id,
+            apparent_magnitude: foundBody.apparent_magnitude,
+            symbol: foundBody.symbol,
+            designation: foundBody.designation,
+            description: foundBody.description,
+          },
+        });
+      }
+    } else {
+      const sessionDate = sessionStart ? new Date(sessionStart) : new Date();
+
+      // Automatic discovery with option to include Planets, Comets, Asteroids
+      if (includePlanets) {
+        for (const p of CELESTIAL_TARGET_CATALOG.planets) {
+          const topoAlt = getTopocentricAltitude(p, lat, lon, sessionDate) ?? p.default_altitude;
+          candidateEvents.push({
+            name: p.name,
+            category: p.category,
+            event_type: p.event_type,
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              target_id: p.target_id,
+              target_altitude_deg: topoAlt,
+              peak_elevation_deg: topoAlt,
+              apparent_magnitude: p.apparent_magnitude,
+              symbol: p.symbol,
+              designation: p.designation,
+              description: p.description,
+            },
+          });
+        }
+      }
+
+      if (includeAsteroids) {
+        for (const a of CELESTIAL_TARGET_CATALOG.asteroids) {
+          candidateEvents.push({
+            name: a.name,
+            category: a.category,
+            event_type: a.event_type,
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              target_id: a.target_id,
+              apparent_magnitude: a.apparent_magnitude,
+              symbol: a.symbol,
+              designation: a.designation,
+              description: a.description,
+            },
+          });
+        }
+      }
+
+      if (includeComets) {
+        for (const c of CELESTIAL_TARGET_CATALOG.comets) {
+          candidateEvents.push({
+            name: c.name,
+            category: c.category,
+            event_type: c.event_type,
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              target_id: c.target_id,
+              target_altitude_deg: c.default_altitude,
+              peak_elevation_deg: c.default_altitude,
+              apparent_magnitude: c.apparent_magnitude,
+              symbol: c.symbol,
+              designation: c.designation,
+              description: c.description,
+            },
+          });
+        }
+      }
+
+      if (includeDeepSky) {
+        for (const d of (CELESTIAL_TARGET_CATALOG.deep_sky || [])) {
+          const topoAlt = getTopocentricAltitude(d, lat, lon, sessionDate) ?? d.default_altitude;
+          candidateEvents.push({
+            name: d.name,
+            category: "deep_sky",
+            event_type: "Deep-Sky Object",
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              catalog_id: d.catalog_id,
+              target_id: d.target_id,
+              object_id: d.catalog_id,
+              target_altitude_deg: topoAlt,
+              peak_elevation_deg: topoAlt,
+              apparent_magnitude: d.apparent_magnitude,
+              ra_deg: d.ra_deg,
+              dec_deg: d.dec_deg,
+              symbol: d.symbol,
+              visual: d.visual,
+              designation: d.designation,
+              description: d.description,
+            },
+          });
+        }
+      }
+
+      if (includeMeteorShowers) {
+        for (const m of (CELESTIAL_TARGET_CATALOG.meteor_showers || [])) {
+          const topoAlt = getTopocentricAltitude(m, lat, lon, sessionDate) ?? m.default_altitude;
+          candidateEvents.push({
+            name: m.name,
+            category: "meteor_shower",
+            event_type: "Meteor Shower",
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              target_id: m.target_id,
+              catalog_id: m.catalog_id,
+              target_name: m.name,
+              target_altitude_deg: topoAlt,
+              peak_elevation_deg: topoAlt,
+              apparent_magnitude: m.apparent_magnitude,
+              zhr: m.zhr,
+              velocity_kms: m.velocity_kms,
+              parent_body: m.parent_body,
+              ra_deg: m.ra_deg,
+              dec_deg: m.dec_deg,
+              symbol: m.symbol,
+              visual: m.visual,
+              designation: m.designation,
+              description: m.description,
+              source: "AstroOS Meteor Ephemeris & IMO Catalog",
+            },
+          });
+        }
+      }
+
+      if (includeSolarEclipses) {
+        for (const s of (CELESTIAL_TARGET_CATALOG.solar_eclipses || [])) {
+          candidateEvents.push({
+            name: s.name,
+            category: "solar_eclipse",
+            event_type: "Solar Eclipse",
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              target_id: s.target_id,
+              catalog_id: s.catalog_id,
+              target_name: s.name,
+              target_altitude_deg: s.default_altitude,
+              peak_elevation_deg: s.default_altitude,
+              apparent_magnitude: s.apparent_magnitude,
+              symbol: s.symbol,
+              visual: s.visual,
+              designation: s.designation,
+              description: s.description,
+              source: "AstroOS Solar Eclipse & Ephemeris Engine",
+            },
+          });
+        }
+      }
+
+      if (includeLunarEclipses) {
+        for (const l of (CELESTIAL_TARGET_CATALOG.lunar_eclipses || [])) {
+          candidateEvents.push({
+            name: l.name,
+            category: "lunar_eclipse",
+            event_type: "Lunar Eclipse",
+            start_time: startIso,
+            end_time: endIso,
+            latitude: lat,
+            longitude: lon,
+            additional_data: {
+              target_id: l.target_id,
+              catalog_id: l.catalog_id,
+              target_name: l.name,
+              target_altitude_deg: l.default_altitude,
+              peak_elevation_deg: l.default_altitude,
+              apparent_magnitude: l.apparent_magnitude,
+              symbol: l.symbol,
+              visual: l.visual,
+              designation: l.designation,
+              description: l.description,
+              source: "AstroOS Lunar Eclipse & Ephemeris Engine",
+            },
+          });
+        }
+      }
+    }
 
     const payload = {
       session: {
@@ -182,20 +494,7 @@ export default function Planner() {
         available_duration_minutes: durationNum,
         observation_goal: goal,
       },
-      events: selectedEvent
-        ? [
-            {
-              event_id: selectedEvent.id,
-              name: selectedEvent.name,
-              category: selectedEvent.category,
-              event_type: selectedEvent.eventType,
-              window_start: startIso,
-              window_end: endIso,
-              latitude: selectedEvent.latitude ?? lat,
-              longitude: selectedEvent.longitude ?? lon,
-            },
-          ]
-        : [],
+      events: candidateEvents,
     };
 
     try {
@@ -213,26 +512,45 @@ export default function Planner() {
     }
   }
 
-  // Merge ranked list with enriched event details to ensure all columns render accurately
+  // Merge ranked list with enriched event details
   const rankedItems = useMemo(() => {
     if (!plan) return [];
 
     const detailsMap = new Map();
     for (const d of plan.details || []) {
-      const key = String(d.event_id || d.id || d.name);
-      detailsMap.set(key, d);
+      if (d.event_id) detailsMap.set(String(d.event_id), d);
+      if (d.id) detailsMap.set(String(d.id), d);
+      if (d.name) {
+        detailsMap.set(String(d.name), d);
+        detailsMap.set(String(d.name).toLowerCase(), d);
+      }
     }
 
     const sourceList =
       Array.isArray(plan.ranked) && plan.ranked.length > 0
         ? plan.ranked
         : Array.isArray(plan.details)
-        ? plan.details
-        : [];
+          ? plan.details
+          : [];
 
-    return sourceList.map((item, idx) => {
-      const key = String(item.event_id || item.id || item.name);
-      const detail = detailsMap.get(key) || {};
+    const mapped = sourceList.map((sourceItem, idx) => {
+      // Be defensive: an incomplete API entry should not crash the whole results list.
+      const item = sourceItem || {};
+      const detail =
+        detailsMap.get(String(item.event_id)) ||
+        detailsMap.get(String(item.id)) ||
+        detailsMap.get(String(item.name)) ||
+        detailsMap.get(String(item.name || "").toLowerCase()) ||
+        {};
+      const name =
+        item.name ||
+        item.object_name ||
+        detail.name ||
+        detail.object_name ||
+        "Celestial Object";
+      const key = String(
+        item.event_id || item.id || detail.event_id || detail.id || name || idx
+      );
 
       const windowStart =
         item.window_start ||
@@ -251,14 +569,58 @@ export default function Planner() {
         detail.required_duration_minutes ||
         minutesBetween(windowStart, windowEnd);
 
+      const rawCat = detail.category || item.category || detail.event_type || item.event_type || "";
+      const lowerCat = String(rawCat).toLowerCase();
+      let normalizedCategory = "Deep Sky";
+      if (lowerCat.includes("planet")) normalizedCategory = "Planets";
+      else if (lowerCat.includes("comet")) normalizedCategory = "Comets";
+      else if (lowerCat.includes("asteroid") || lowerCat.includes("neo")) normalizedCategory = "Asteroids";
+      else if (lowerCat.includes("moon") || lowerCat.includes("lunar")) normalizedCategory = "Moon";
+      else if (lowerCat.includes("meteor")) normalizedCategory = "Meteor Showers";
+      else if (lowerCat.includes("eclipse")) normalizedCategory = "Eclipses";
+
+      const metadata = {
+        ...(detail.metadata || {}),
+        ...(item.metadata || {}),
+      };
+
+      const additionalData = {
+        ...(detail.additional_data || {}),
+        ...(item.additional_data || {}),
+      };
+      const apparentMagnitude =
+        additionalData.apparent_magnitude ??
+        detail.apparent_magnitude ??
+        item.apparent_magnitude ??
+        null;
+      const observationGuide = getObservationGuide(
+        name,
+        rawCat || normalizedCategory,
+        apparentMagnitude,
+        additionalData
+      );
+
+      const horizonsFacts = metadata.nasa_horizons_facts || {};
+      const derivedValues = metadata.derived_astronomical_values || {};
+
+      const peakElevation =
+        horizonsFacts.peak_elevation_deg ??
+        derivedValues.peak_elevation_deg ??
+        additionalData.peak_elevation_deg ??
+        detail.peak_elevation_deg ??
+        item.peak_elevation_deg ??
+        null;
       return {
         ...detail,
         ...item,
+        peakElevation,
+        elevationSource: peakElevation != null ? "NASA JPL Horizons" : null,
         key: key || `target-${idx}`,
         rank: item.rank ?? idx + 1,
-        name: item.name || detail.name || detail.object_name || "Celestial target",
-        category: detail.category || item.category || "General target",
-        eventType: detail.event_type || item.event_type || "Observation",
+        name,
+        category: normalizedCategory,
+        eventType: detail.event_type || item.event_type || normalizedCategory,
+        observationGuide,
         recommendationScore:
           item.recommendation_score ?? detail.recommendation_score ?? null,
         visibilityScore:
@@ -281,12 +643,17 @@ export default function Planner() {
           Array.isArray(detail.limitations) && detail.limitations.length > 0
             ? detail.limitations
             : Array.isArray(item.limitations)
-            ? item.limitations
-            : [],
+              ? item.limitations
+              : [],
         scoreBreakdown: item.score_breakdown || detail.score_breakdown || null,
       };
     });
-  }, [plan]);
+
+    if (opportunityFilter === "all") {
+      return mapped;
+    }
+    return mapped.filter((item) => item.category.toLowerCase() === opportunityFilter.toLowerCase());
+  }, [plan, opportunityFilter]);
 
   const schedule = plan?.schedule || [];
   const skipped = plan?.skipped || [];
@@ -297,13 +664,13 @@ export default function Planner() {
       <section className="explore-hero planner-hero">
         <div className="explore-hero-content">
           <div className="eyebrow">
-            <span className="live-dot" /> OBSERVATION PLANNING
+            <span className="live-dot" /> OBSERVATION PLANNING & PREDICTION
           </div>
           <h1>Plan the <span>night sky.</span></h1>
           <p>
-            Configure your observing coordinates, session window, and goals.
-            AstroOS analyzes ephemeris geometry and environmental conditions to
-            produce an optimized observation plan.
+            Configure your observing coordinates, session window, and celestial goals.
+            AstroOS analyzes NASA JPL Horizons ephemerides, atmospheric transparency, and
+            sky mechanics to generate an optimized observation plan for planets, comets, asteroids, and deep-sky objects.
           </p>
         </div>
         <BrandLogo size="panel" />
@@ -311,33 +678,16 @@ export default function Planner() {
 
       <form className="planner-form panel" onSubmit={handleGenerate}>
         <div className="planner-grid">
-          <label>
-            Latitude
-            <input
-              type="number"
-              step="0.0001"
-              min="-90"
-              max="90"
-              required
-              value={latitude}
-              onChange={(event) => setLatitude(event.target.value)}
-              placeholder="e.g. 10.5276"
-            />
-          </label>
-
-          <label>
-            Longitude
-            <input
-              type="number"
-              step="0.0001"
-              min="-180"
-              max="180"
-              required
-              value={longitude}
-              onChange={(event) => setLongitude(event.target.value)}
-              placeholder="e.g. 76.2144"
-            />
-          </label>
+          <LocationPicker
+            latitude={latitude}
+            longitude={longitude}
+            locationName={locationName}
+            onChange={({ latitude: newLat, longitude: newLon, name }) => {
+              setLatitude(newLat);
+              setLongitude(newLon);
+              if (name) setLocationName(name);
+            }}
+          />
 
           <label>
             Session start
@@ -382,35 +732,178 @@ export default function Planner() {
             </select>
           </label>
 
+          {/* Enhanced Target Selector including Planets, Comets, Asteroids */}
           <label className="span-2">
-            Target selection
+            Target selection / Focus object
             <select
-              value={selectedEventId}
-              onChange={(event) => setSelectedEventId(event.target.value)}
+              value={selectedTargetKey}
+              onChange={(event) => setSelectedTargetKey(event.target.value)}
             >
               <option value="">
-                Discover live targets automatically (JPL Horizons & Catalogues)
+                ✦ Automatic Discovery (Evaluate all selected categories below)
               </option>
-              {catalogue.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name} · {item.category} ({item.eventType})
-                </option>
-              ))}
+
+              <optgroup label="🪐 Major Planets (AstroOS Planetary Ephemeris)">
+                {CELESTIAL_TARGET_CATALOG.planets.map((p) => (
+                  <option key={p.name} value={`pred_planet_${p.name}`}>
+                    {p.name} ({p.symbol}) · Planet ({p.designation})
+                  </option>
+                ))}
+              </optgroup>
+
+              <optgroup label="🪨 Asteroids & NEOs (JPL Horizons Small-Body Database)">
+                {CELESTIAL_TARGET_CATALOG.asteroids.map((a) => (
+                  <option key={a.name} value={`pred_asteroid_${a.name}`}>
+                    {a.name} ({a.symbol}) · Asteroid ({a.designation})
+                  </option>
+                ))}
+              </optgroup>
+
+              <optgroup label="☄️ Comets (JPL Horizons Comet Ephemeris)">
+                {CELESTIAL_TARGET_CATALOG.comets.map((c) => (
+                  <option key={c.name} value={`pred_comet_${c.name}`}>
+                    {c.name} ({c.symbol}) · Comet ({c.designation})
+                  </option>
+                ))}
+              </optgroup>
+
+              {CELESTIAL_TARGET_CATALOG.deep_sky && (
+                <optgroup label="✨ Deep-Sky Objects (Messier Catalog & Nebulae)">
+                  {CELESTIAL_TARGET_CATALOG.deep_sky.map((d) => (
+                    <option key={d.name} value={`pred_deep_sky_${d.name}`}>
+                      {d.name} ({d.symbol}) · {d.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {CELESTIAL_TARGET_CATALOG.meteor_showers && (
+                <optgroup label="🌠 Meteor Showers (Perseids, Geminids, Orionids...)">
+                  {CELESTIAL_TARGET_CATALOG.meteor_showers.map((m) => (
+                    <option key={m.name} value={`pred_meteor_${m.name}`}>
+                      {m.name} ({m.symbol}) · {m.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {CELESTIAL_TARGET_CATALOG.solar_eclipses && (
+                <optgroup label="☀️ Solar Eclipses (Total & Annular 'Ring of Fire')">
+                  {CELESTIAL_TARGET_CATALOG.solar_eclipses.map((s) => (
+                    <option key={s.name} value={`pred_solar_${s.name}`}>
+                      {s.name} ({s.symbol}) · {s.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {CELESTIAL_TARGET_CATALOG.lunar_eclipses && (
+                <optgroup label="🌑 Lunar Eclipses (Blood Moon Totality & Partial)">
+                  {CELESTIAL_TARGET_CATALOG.lunar_eclipses.map((l) => (
+                    <option key={l.name} value={`pred_lunar_${l.name}`}>
+                      {l.name} ({l.symbol}) · {l.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {catalogue.length > 0 && (
+                <optgroup label="📚 Stored Database Records">
+                  {catalogue.map((item) => (
+                    <option key={item.id} value={`db_${item.id}`}>
+                      {item.name} · {item.category} ({item.eventType})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </label>
         </div>
 
+        {/* Prediction Options: Checkboxes to include Planets, Comets, Asteroids, Deep Sky, Meteor Showers */}
+        {!selectedTargetKey && (
+          <div className="planner-target-options">
+            <div className="target-options-label">
+              AUTOMATIC PREDICTION TARGET CATEGORIES
+            </div>
+            <div className="target-options-chips">
+              <label className={`target-option-box ${includePlanets ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includePlanets}
+                  onChange={(e) => setIncludePlanets(e.target.checked)}
+                />
+                <span>🪐 Predict Planets (Jupiter, Saturn, Mars, Venus, Mercury...)</span>
+              </label>
+
+              <label className={`target-option-box ${includeAsteroids ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includeAsteroids}
+                  onChange={(e) => setIncludeAsteroids(e.target.checked)}
+                />
+                <span>🪨 Predict Asteroids & NEOs (Ceres, Vesta, Apophis...)</span>
+              </label>
+
+              <label className={`target-option-box ${includeComets ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includeComets}
+                  onChange={(e) => setIncludeComets(e.target.checked)}
+                />
+                <span>☄️ Predict Comets (1P/Halley, NEOWISE...)</span>
+              </label>
+
+              <label className={`target-option-box ${includeDeepSky ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includeDeepSky}
+                  onChange={(e) => setIncludeDeepSky(e.target.checked)}
+                />
+                <span>✨ Predict Deep-Sky Objects (M31 Andromeda, M42 Orion, M45 Pleiades...)</span>
+              </label>
+
+              <label className={`target-option-box ${includeMeteorShowers ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includeMeteorShowers}
+                  onChange={(e) => setIncludeMeteorShowers(e.target.checked)}
+                />
+                <span>🌠 Predict Meteor Showers (Perseids, Geminids, Orionids...)</span>
+              </label>
+
+              <label className={`target-option-box ${includeSolarEclipses ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includeSolarEclipses}
+                  onChange={(e) => setIncludeSolarEclipses(e.target.checked)}
+                />
+                <span>☀️ Predict Solar Eclipses (Total & Annular 'Ring of Fire')</span>
+              </label>
+
+              <label className={`target-option-box ${includeLunarEclipses ? "checked" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={includeLunarEclipses}
+                  onChange={(e) => setIncludeLunarEclipses(e.target.checked)}
+                />
+                <span>🌑 Predict Lunar Eclipses (Blood Moon Totality & Partial)</span>
+              </label>
+            </div>
+          </div>
+        )}
+
         <p className="planner-hint">
           <MapPin size={14} />
-          {selectedEventId ? (
+          {selectedTargetKey ? (
             <span>
-              Evaluating specific target <strong>{selectedEvent?.name}</strong> for
+              Evaluating focused target <strong>{selectedTargetKey.replace(/^pred_.*?_|^db_/, "")}</strong> for
               the selected observation session.
             </span>
           ) : (
             <span>
-              Automatic discovery evaluates solar-system bodies, visible planets,
-              and catalogued deep-sky objects visible from your location.
+              The AstroOS intelligence engine evaluates topocentric elevation, twilight limits,
+              and atmospheric transparency for all active categories above.
             </span>
           )}
         </p>
@@ -428,7 +921,7 @@ export default function Planner() {
             </>
           ) : (
             <>
-              <Telescope size={16} /> Generate observation plan
+              <Telescope size={16} /> Generate observation plan & predictions
             </>
           )}
         </button>
@@ -493,12 +986,26 @@ export default function Planner() {
                   environmental forecasts, and observer preference.
                 </p>
               </div>
+
+              {/* Category filter pills for ranked opportunities */}
+              <div className="result-category-filter" role="group">
+                {["all", "Planets", "Comets", "Asteroids", "Deep Sky", "Meteor Showers"].map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`category-chip ${opportunityFilter.toLowerCase() === cat.toLowerCase() ? "selected" : ""}`}
+                    onClick={() => setOpportunityFilter(cat)}
+                  >
+                    {cat === "all" ? "All Objects" : cat}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {rankedItems.length === 0 ? (
               <div className="empty-inline">
                 <BrandLogo size="sm" />
-                <p>The intelligence engine evaluated this session but found no suitable targets.</p>
+                <p>No targets found matching the "{opportunityFilter}" filter for this session.</p>
               </div>
             ) : (
               <div className="result-table">
@@ -508,21 +1015,48 @@ export default function Planner() {
                     <div key={item.key} className="result-item-container">
                       <article
                         className="result-row"
-                        onClick={() =>
-                          item.limitations?.length > 0
-                            ? setExpandedTarget(isExpanded ? null : item.key)
-                            : null
-                        }
-                        style={{ cursor: item.limitations?.length > 0 ? "pointer" : "default" }}
+                        onClick={() => setExpandedTarget(isExpanded ? null : item.key)}
+                        style={{ cursor: "pointer" }}
+                        title="Click to view optical observation guidance and details"
                       >
                         <div className="result-rank">#{item.rank}</div>
 
                         <div className="result-info">
-                          <strong>{item.name}</strong>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <div
+                              style={{
+                                width: "24px",
+                                height: "24px",
+                                borderRadius: "50%",
+                                overflow: "hidden",
+                                flexShrink: 0,
+                                border: `1px solid ${getCelestialImage(item.name, item.category).accent || "rgba(255,255,255,0.2)"}`,
+                                backgroundImage: `url(${getCelestialImage(item.name, item.category).url})`,
+                                backgroundSize: "cover",
+                                backgroundPosition: "center",
+                              }}
+                              title={item.name}
+                            />
+                            <strong>{item.name}</strong>
+                          </div>
                           <span>
                             {item.category} · {item.eventType}
                             {item.qualityLabel ? ` · ${item.qualityLabel}` : ""}
                           </span>
+                          {item.observationGuide && (
+                            <span
+                              className={`equipment-badge badge-${item.observationGuide.iconType}`}
+                              style={{ marginTop: "4px", width: "fit-content" }}
+                              title={`Equipment: ${item.observationGuide.equipmentDetail}`}
+                            >
+                              {item.observationGuide.iconType === "eye" && <Eye size={11} />}
+                              {item.observationGuide.iconType === "binoculars" && <Binoculars size={11} />}
+                              {item.observationGuide.iconType === "telescope" && <Telescope size={11} />}
+                              {item.observationGuide.iconType === "sun" && <Sun size={11} />}
+                              {item.observationGuide.iconType === "camera" && <Camera size={11} />}
+                              <span>{item.observationGuide.badge}</span>
+                            </span>
+                          )}
                         </div>
 
                         <div>
@@ -554,16 +1088,60 @@ export default function Planner() {
                         </div>
                       </article>
 
-                      {isExpanded && item.limitations?.length > 0 && (
+                      {isExpanded && (
                         <div className="result-expanded-details">
-                          <div className="limitations-title">
-                            <Info size={14} /> Evaluation factors & limitations:
+                          <div className="planner-equipment-guide-box">
+                            <div className="planner-guide-title">
+                              <span>ASTRONOMICAL POSITION</span>
+                            </div>
+                            <p className="planner-gear-requirement">
+                              <strong>Peak elevation:</strong>{" "}
+                              {item.peakElevation != null
+                                ? `${Number(item.peakElevation).toFixed(2)}°`
+                                : "Unavailable from JPL Horizons"}
+                            </p>
+                            {item.elevationSource && (
+                              <p className="planner-gear-requirement">
+                                <strong>Source:</strong> {item.elevationSource}
+                              </p>
+                            )}
                           </div>
-                          <ul className="limitations-list">
-                            {item.limitations.map((lim, idx) => (
-                              <li key={idx}>{lim}</li>
-                            ))}
-                          </ul>
+                          {item.observationGuide && (
+                            <div className="planner-equipment-guide-box">
+                              <div className="planner-guide-title">
+                                <Telescope size={14} />
+                                <span>OBSERVATION METHOD & OPTICAL GEAR REQUIREMENTS</span>
+                              </div>
+                              <p className="planner-gear-requirement">
+                                <strong>Recommended Aid:</strong> {item.observationGuide.equipmentDetail}
+                              </p>
+                              <p className="planner-gear-requirement">
+                                <strong>Magnification:</strong> {item.observationGuide.magnification}
+                              </p>
+                              {item.observationGuide.accessories?.length > 0 && (
+                                <p className="planner-accessories-list">
+                                  <strong>Accessories & Components:</strong>{" "}
+                                  {item.observationGuide.accessories.join(" · ")}
+                                </p>
+                              )}
+                              <p className="planner-how-to-see">
+                                <strong>How to Observe:</strong> {item.observationGuide.howToSee}
+                              </p>
+                            </div>
+                          )}
+
+                          {item.limitations?.length > 0 && (
+                            <div className="limitations-box" style={{ marginTop: "10px" }}>
+                              <div className="limitations-title">
+                                <Info size={14} /> Evaluation factors & limitations:
+                              </div>
+                              <ul className="limitations-list">
+                                {item.limitations.map((lim, idx) => (
+                                  <li key={idx}>{lim}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -592,6 +1170,22 @@ export default function Planner() {
                     <div>
                       <strong>{item.name}</strong>
                       <span>{item.explanation || "Scheduled by AstroOS optimizer"}</span>
+                      {(() => {
+                        const schedGuide = getObservationGuide(item.name, item.category);
+                        return (
+                          <span
+                            className={`equipment-badge badge-${schedGuide.iconType}`}
+                            style={{ marginTop: "4px", width: "fit-content" }}
+                          >
+                            {schedGuide.iconType === "eye" && <Eye size={10} />}
+                            {schedGuide.iconType === "binoculars" && <Binoculars size={10} />}
+                            {schedGuide.iconType === "telescope" && <Telescope size={10} />}
+                            {schedGuide.iconType === "sun" && <Sun size={10} />}
+                            {schedGuide.iconType === "camera" && <Camera size={10} />}
+                            <span>{schedGuide.badge}</span>
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div>
                       <small>Start</small>

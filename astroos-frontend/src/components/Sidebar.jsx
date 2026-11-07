@@ -3,16 +3,13 @@ import {
   CalendarDays,
   Compass,
   LayoutDashboard,
-  LogOut,
   ShieldCheck,
   Sparkles,
   UserCircle,
   X,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 
 import BrandLogo from "./BrandLogo";
-import { useAuth } from "../context/AuthContext";
 
 const navigation = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
@@ -30,15 +27,6 @@ export default function Sidebar({
   onClose,
   isAdmin = false,
 }) {
-  const { logout } = useAuth();
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await logout();
-    onClose();
-    navigate("/login", { replace: true });
-  }
-
   return (
     <>
       {open && (
@@ -95,9 +83,6 @@ export default function Sidebar({
           <div className="sidebar-bottom-text">
             Discover celestial events and plan sessions from live AstroOS APIs.
           </div>
-          <button className="sidebar-logout" onClick={handleLogout}>
-            <LogOut size={14} /> Sign out
-          </button>
         </div>
       </aside>
     </>

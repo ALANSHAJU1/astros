@@ -20,6 +20,7 @@ from app.services.environmental_service import EnvironmentalService
 from app.services.event_deduplication import deduplicate_events
 from app.services.hathim_astronomy_adapter import HathimAstronomyAdapter
 from app.services.preference_scoring import calculate_preference_score
+from app.services.observation_duration_policy import (DEFAULT_DURATION_MINUTES,resolve_event_duration,)
 from app.services.visibility_scoring_engine import (
     evaluate_event_visibility,
     score_to_quality_and_decision,
@@ -28,24 +29,9 @@ from app.services.visibility_scoring_engine import (
 # get_test_assessment is None by default in production.
 # Preserved on module only for backward compatibility if legacy tests monkeypatch it.
 get_test_assessment = None
-
-DEFAULT_DURATIONS = {
-    "full_moon": 30,
-    "new_moon": 30,
-    "planet": 20,
-    "meteor_shower": 30,
-    "eclipse": 20,
-    "solar_eclipse": 20,
-    "lunar_eclipse": 20,
-    "comet": 20,
-    "asteroid": 20,
-    "visible_pass": 10,
-    "satellite": 10,
-    "deep_sky": 45,
-    "deep-sky object": 45,
-    "dso": 45,
-}
-
+# Backward compatibility for existing tests and external callers.
+# The shared duration policy remains the single source of truth.
+DEFAULT_DURATIONS = DEFAULT_DURATION_MINUTES
 
 def _find_best_observation_for_window(
     win_start: datetime | None,
@@ -342,10 +328,23 @@ def get_database_recommendations(
             preferences=preferences,
         )
 
-        duration = DEFAULT_DURATIONS.get(
-            event.event_type.lower(),
-            DEFAULT_DURATIONS.get(getattr(event, "category", "").lower(), 20),
+        event_extra = event.additional_data or {}
+        explicit_duration = event_extra.get("required_duration_minutes")
+        if explicit_duration is None:
+            explicit_duration = event_extra.get("duration_minutes")
+        duration = resolve_event_duration(
+            event.event_type or event.category,
+            explicit_duration,
         )
+        if duration is None:
+            rejected_events.append({
+                "event_id": str(event.id),
+                "reason": (
+                    f"No observation duration is configured for event type "
+                    f"'{event.event_type or event.category}'."
+                ),
+            })
+            continue
 
         window_minutes = (
             event.end_time - event.start_time

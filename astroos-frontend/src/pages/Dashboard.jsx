@@ -9,6 +9,7 @@ import {
   Droplets,
   Eye,
   LoaderCircle,
+  Sparkles,
   Telescope,
   Thermometer,
 } from "lucide-react";
@@ -18,6 +19,8 @@ import { useAuth } from "../context/AuthContext";
 import { eventService } from "../services/eventService";
 import { adaptEvent, formatEventDate } from "../services/eventAdapter";
 import { environmentalService } from "../services/environmentalService";
+import { CELESTIAL_TARGET_CATALOG } from "../services/predictionService";
+import { getCelestialImage } from "../services/celestialImages";
 import { getApiErrorMessage } from "../utils/apiErrors";
 import { loadObserverLocation } from "../utils/location";
 
@@ -59,7 +62,7 @@ export default function Dashboard() {
       try {
         const data = await eventService.getEvents({ skip: 0, limit: 100 });
         if (!cancelled) {
-          setEvents(Array.isArray(data) ? data.map(adaptEvent) : []);
+          setEvents(Array.isArray(data) ? data.map(adaptEvent).filter(Boolean) : []);
         }
       } catch (err) {
         if (!cancelled) {
@@ -96,15 +99,39 @@ export default function Dashboard() {
     };
   }, [location]);
 
-  // Display opportunities: prioritizes upcoming events, falling back to loaded catalogue records
+  // Display opportunities: prioritizes database events, falling back to predicted planetary targets
   const displayEvents = useMemo(() => {
-    if (!events.length) return [];
-    return events.slice(0, 6);
+    if (events.length > 0) return events.slice(0, 6);
+
+    // Fallback: predictable planets, deep sky objects, asteroids & comets
+    const fallback = [
+      ...CELESTIAL_TARGET_CATALOG.planets.slice(0, 3),
+      ...(CELESTIAL_TARGET_CATALOG.deep_sky ? CELESTIAL_TARGET_CATALOG.deep_sky.slice(0, 2) : []),
+      ...CELESTIAL_TARGET_CATALOG.asteroids.slice(0, 1),
+      ...CELESTIAL_TARGET_CATALOG.comets.slice(0, 1),
+    ].map((b) =>
+      adaptEvent({
+        id: `pred-${b.name.toLowerCase()}`,
+        name: b.name,
+        category: b.category,
+        designation: b.designation,
+        start_time: new Date().toISOString(),
+        is_predicted: true,
+        score: 88,
+        description: b.description,
+        additional_data: {
+          symbol: b.symbol,
+          apparent_magnitude: b.apparent_magnitude,
+        },
+      })
+    ).filter(Boolean);
+
+    return fallback;
   }, [events]);
 
   const categories = useMemo(
-    () => new Set(events.map((event) => event.category)).size,
-    [events]
+    () => new Set((events.length ? events : displayEvents).map((event) => event.category)).size,
+    [events, displayEvents]
   );
 
   const greeting = user?.full_name || user?.email || "Observer";
@@ -120,8 +147,8 @@ export default function Dashboard() {
             Welcome back, <span>{greeting}.</span>
           </h1>
           <p>
-            Review catalogue events, inspect atmospheric conditions, and launch
-            the observation planner to calculate optimal viewing sessions.
+            Explore celestial events, predict visible passes for planets, comets, and asteroids,
+            inspect atmospheric conditions, and calculate optimal viewing sessions.
           </p>
           <div className="welcome-actions">
             <button className="primary-action" onClick={() => navigate("/explore")}>
@@ -139,7 +166,7 @@ export default function Dashboard() {
 
       <section className="section-heading">
         <div>
-          <div className="eyebrow">CATALOGUE OVERVIEW</div>
+          <div className="eyebrow">CATALOGUE & PREDICTIONS OVERVIEW</div>
           <h2>At a glance</h2>
         </div>
         {loading && (
@@ -158,81 +185,115 @@ export default function Dashboard() {
       <section className="metrics-grid">
         <MetricCard
           icon={CalendarDays}
-          label="Catalogue events"
-          value={String(events.length).padStart(2, "0")}
-          detail="Active database records"
+          label="Available targets"
+          value={events.length || displayEvents.length}
+          detail={events.length ? "Database & Ephemeris" : "Predicted celestial bodies"}
         />
         <MetricCard
-          icon={Eye}
-          label="Event categories"
-          value={String(categories).padStart(2, "0")}
-          detail="Planets, Moon, Deep Sky"
-        />
-        <MetricCard
-          icon={Cloud}
-          label="Cloud cover"
-          value={environment?.cloud_cover != null ? Math.round(environment.cloud_cover) : "—"}
-          unit={environment?.cloud_cover != null ? "%" : ""}
-          detail={environment ? `Source: ${environment.source || "Stored snapshot"}` : "No stored forecast"}
+          icon={Compass}
+          label="Categories"
+          value={categories}
+          detail="Planets, Deep Sky, Comets, Asteroids"
         />
         <MetricCard
           icon={Thermometer}
           label="Temperature"
           value={
-            environment?.temperature_celsius != null
-              ? Number(environment.temperature_celsius).toFixed(1)
+            (environment?.temperature_celsius ?? environment?.temperature) != null
+              ? Math.round(environment.temperature_celsius ?? environment.temperature)
               : "—"
           }
-          unit={environment?.temperature_celsius != null ? "°C" : ""}
-          detail={environment?.conditions || "Awaiting observation"}
+          unit={
+            (environment?.temperature_celsius ?? environment?.temperature) != null
+              ? "°C"
+              : ""
+          }
+          detail={
+            environment
+              ? `Cloud: ${Math.round(environment.cloud_cover ?? environment.cloud_coverage ?? 0)}%`
+              : "Open-Meteo forecast"
+          }
+        />
+        <MetricCard
+          icon={Eye}
+          label="Observer location"
+          value={location.name ? location.name.split(",")[0] : `${location.latitude.toFixed(2)}°`}
+          detail={`${location.latitude.toFixed(2)}°, ${location.longitude.toFixed(2)}°`}
         />
       </section>
 
       <section className="dashboard-grid">
         <div className="panel opportunities-panel">
-          <div className="panel-header opportunities-header">
+          <div className="panel-header">
             <div>
-              <div className="eyebrow">CATALOGUE TARGETS</div>
+              <div className="eyebrow">CELESTIAL TARGETS</div>
               <h3>Observation opportunities</h3>
-              <p>Stored celestial events available for observation planning.</p>
+              <p>Predicted planetary and catalogue bodies ready for observation planning.</p>
             </div>
             <button className="text-button" onClick={() => navigate("/explore")}>
-              Open catalogue <ArrowRight size={16} />
+              View all <ArrowRight size={15} />
             </button>
           </div>
 
-          {displayEvents.length === 0 ? (
-            <div className="empty-inline">
-              <BrandLogo size="sm" />
-              <p>
-                {events.length === 0
-                  ? "The event catalogue is currently empty. Open the Observation Planner to discover live targets from astronomy ephemeris services."
-                  : "No events were loaded."}
-              </p>
-            </div>
-          ) : (
-            <div className="opportunity-list">
-              {displayEvents.map((item) => (
+          <div className="opportunity-list">
+            {displayEvents.map((item) => (
+              <div
+                className="opportunity-row"
+                key={item.id}
+                onClick={() =>
+                  navigate("/planner", { state: { selectedTarget: item.name } })
+                }
+                style={{ cursor: "pointer" }}
+                title="Click to plan observation session for this target"
+              >
                 <div
-                  className="opportunity-row"
-                  key={item.id}
-                  onClick={() =>
-                    navigate("/planner", { state: { selectedTarget: item.name } })
-                  }
-                  title={`Plan an observation session for ${item.name}`}
-                  style={{ cursor: "pointer" }}
+                  className="target-symbol"
+                  style={{
+                    position: "relative",
+                    overflow: "hidden",
+                    backgroundImage: `url(${getCelestialImage(item.name, item.category).url})`,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                    border: `1px solid ${getCelestialImage(item.name, item.category).accent || "#29424d"}`,
+                  }}
+                  title={item.name}
                 >
-                  <div className="target-symbol">{item.category.slice(0, 3).toUpperCase()}</div>
-                  <div className="target-info">
-                    <strong>{item.name}</strong>
-                    <span>{item.eventType}</span>
-                  </div>
-                  <div className="target-type">{item.category}</div>
-                  <div className="target-time">{formatEventDate(item.startTime)}</div>
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      background: "rgba(5, 5, 11, 0.45)",
+                    }}
+                  />
+                  <span style={{ position: "relative", zIndex: 1, textShadow: "0 2px 4px rgba(0,0,0,0.8)" }}>
+                    {item.additionalData?.symbol || (item.category === "Planets" ? "🪐" : item.category === "Comets" ? "☄️" : item.category === "Asteroids" ? "🪨" : item.category === "Meteor Showers" ? "🌠" : item.category === "Solar Eclipses" ? "☀️" : item.category === "Lunar Eclipses" ? "🌑" : "✦")}
+                  </span>
                 </div>
-              ))}
-            </div>
-          )}
+                <div className="target-info">
+                  <strong>{item.name}</strong>
+                  <span>{item.designation}</span>
+                </div>
+                <div className="target-type">
+                  <span>{item.category}</span>
+                  {item.observationGuide && (
+                    <span
+                      className={`equipment-badge badge-${item.observationGuide.iconType}`}
+                      style={{ fontSize: "0.68rem", padding: "1px 6px", marginTop: "2px" }}
+                    >
+                      {item.observationGuide.badge}
+                    </span>
+                  )}
+                </div>
+                <div className="target-time">
+                  {item.isPredicted ? (
+                    <span style={{ color: "#fef08a" }}>PREDICTED PASS</span>
+                  ) : (
+                    formatEventDate(item.startTime)
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="panel conditions-panel">

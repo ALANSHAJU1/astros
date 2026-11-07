@@ -262,7 +262,7 @@ def find_earliest_slot(
         candidate_starts.append(latest_start)
 
     # Remove duplicates and sort in descending order to prefer later slots
-    candidate_starts = sorted(set(candidate_starts), reverse=True)
+    candidate_starts = sorted(set(candidate_starts))
 
     for start_candidate in candidate_starts:
         end_candidate = start_candidate + duration_td

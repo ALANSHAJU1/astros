@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import BrandLogo from "../components/BrandLogo";
+import LocationPicker from "../components/LocationPicker";
 import { useAuth } from "../context/AuthContext";
 import { formatDateTime } from "../utils/datetime";
 import { loadObserverLocation, saveObserverLocation } from "../utils/location";
@@ -26,7 +27,7 @@ export default function Profile() {
     const lat = Number(location.latitude);
     const lon = Number(location.longitude);
     if (Number.isFinite(lat) && Number.isFinite(lon)) {
-      saveObserverLocation({ latitude: lat, longitude: lon });
+      saveObserverLocation({ latitude: lat, longitude: lon, name: location.name });
       setSavedMessage(true);
       setTimeout(() => setSavedMessage(false), 3000);
     }
@@ -122,36 +123,15 @@ export default function Profile() {
           </div>
 
           <form onSubmit={handleSaveLocation} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div className="planner-grid" style={{ marginBottom: 0 }}>
-              <label>
-                Default latitude
-                <input
-                  type="number"
-                  step="0.0001"
-                  min="-90"
-                  max="90"
-                  required
-                  value={location.latitude}
-                  onChange={(e) =>
-                    setLocation((prev) => ({ ...prev, latitude: e.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                Default longitude
-                <input
-                  type="number"
-                  step="0.0001"
-                  min="-180"
-                  max="180"
-                  required
-                  value={location.longitude}
-                  onChange={(e) =>
-                    setLocation((prev) => ({ ...prev, longitude: e.target.value }))
-                  }
-                />
-              </label>
-            </div>
+            <LocationPicker
+              latitude={location.latitude}
+              longitude={location.longitude}
+              locationName={location.name}
+              onChange={({ latitude, longitude, name }) => {
+                setLocation({ latitude, longitude, name });
+              }}
+              label="Default Observing Station"
+            />
 
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "4px" }}>
               <button className="primary-action" type="submit" style={{ padding: "8px 16px" }}>
@@ -193,7 +173,7 @@ export default function Profile() {
               style={{ marginTop: "16px", width: "100%", justifyContent: "center" }}
               onClick={handleLogout}
             >
-              <LogOut size={15} /> End observer session (Sign out)
+              <LogOut size={15} /> End observer session (Logout)
             </button>
           </div>
         </div>

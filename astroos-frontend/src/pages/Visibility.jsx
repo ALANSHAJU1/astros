@@ -1,11 +1,17 @@
 import {
   AlertCircle,
+  Binoculars,
+  Camera,
   Cloud,
   Droplets,
   Eye,
   Info,
   LoaderCircle,
   MapPin,
+  SlidersHorizontal,
+  Sparkles,
+  Sun,
+  Telescope,
   Thermometer,
   Wind,
 } from "lucide-react";
@@ -23,10 +29,15 @@ import {
 } from "recharts";
 
 import BrandLogo from "../components/BrandLogo";
+import LocationPicker from "../components/LocationPicker";
 import { environmentalService } from "../services/environmentalService";
 import { adaptEvent } from "../services/eventAdapter";
 import { eventService } from "../services/eventService";
 import { visibilityService } from "../services/visibilityService";
+import { CELESTIAL_TARGET_CATALOG, predictionService } from "../services/predictionService";
+import { getCelestialImage } from "../services/celestialImages";
+import { getLightPollution, calculateLightPollutionEffect } from "../services/geocodingService";
+import { getObservationGuide } from "../utils/observationGuide";
 import { getApiErrorMessage } from "../utils/apiErrors";
 import {
   formatClock,
@@ -94,6 +105,7 @@ export default function Visibility() {
 
   const [latitude, setLatitude] = useState(stored.latitude);
   const [longitude, setLongitude] = useState(stored.longitude);
+  const [locationName, setLocationName] = useState(stored.name || "");
   const [startTime, setStartTime] = useState(windowDefaults.start);
   const [endTime, setEndTime] = useState(windowDefaults.end);
   const [events, setEvents] = useState([]);
@@ -114,9 +126,19 @@ export default function Visibility() {
         const adapted = Array.isArray(data) ? data.map(adaptEvent) : [];
         setEvents(adapted);
         const selected = routerLocation.state?.selectedEventId;
+        const targetParam = routerLocation.state?.selectedTarget;
+        if (targetParam && !selected) {
+          for (const [catKey, list] of Object.entries(CELESTIAL_TARGET_CATALOG)) {
+            const match = list.find((b) => b.name.toLowerCase() === targetParam.toLowerCase());
+            if (match) {
+              setEventId(`pred_${catKey}_${match.name}`);
+              break;
+            }
+          }
+        }
         if (selected && adapted.some((e) => e.id === selected)) {
           setEventId(selected);
-        } else if (adapted[0]) {
+        } else if (adapted[0] && !targetParam) {
           setEventId(adapted[0].id);
         }
       })
@@ -193,11 +215,106 @@ export default function Visibility() {
       return;
     }
 
-    saveObserverLocation({ latitude: lat, longitude: lon });
+    saveObserverLocation({ latitude: lat, longitude: lon, name: locationName });
     setLoading(true);
 
     try {
-      if (eventId) {
+      const lpProfile = getLightPollution(lat, lon, locationName);
+
+      if (eventId && eventId.startsWith("pred_")) {
+        let body = null;
+        for (const list of Object.values(CELESTIAL_TARGET_CATALOG)) {
+          body = list.find((b) => eventId.endsWith(`_${b.name}`));
+          if (body) break;
+        }
+
+        const targetCat = body?.category || "planet";
+        const lpEffect = calculateLightPollutionEffect(targetCat, lpProfile.bortle_class);
+
+        try {
+          const categoryParam =
+            body?.category === "planet"
+              ? "planets"
+              : body?.category === "comet"
+              ? "comets"
+              : body?.category === "deep_sky"
+              ? "deep_sky"
+              : body?.category === "meteor_shower" || body?.category === "meteor"
+              ? "meteor_showers"
+              : body?.category === "solar_eclipse" || body?.category === "solar"
+              ? "solar_eclipses"
+              : body?.category === "lunar_eclipse" || body?.category === "lunar"
+              ? "lunar_eclipses"
+              : "asteroids";
+
+          const planResult = await predictionService.generateObservationPlan({
+            latitude: lat,
+            longitude: lon,
+            sessionStart: start.slice(0, 16),
+            sessionEnd: end.slice(0, 16),
+            availableDurationMinutes: 180,
+            includeBodies: [categoryParam],
+          });
+
+          const details =
+            planResult.recommendations?.details ||
+            planResult.recommendations?.ranked_events ||
+            planResult.ranked ||
+            [];
+          const foundDetail =
+            details.find((d) =>
+              (d.name || d.object_name || "")
+                .toLowerCase()
+                .includes(body?.name?.toLowerCase())
+            ) || details[0];
+
+          const rawScore = foundDetail?.visibility_score ?? foundDetail?.score ?? 80;
+          const adjustedScore = Math.max(10, Math.round(rawScore - lpEffect.penalty));
+
+          const combinedLimits = [...(foundDetail?.limitations || [])];
+          if (lpEffect.limitation && !combinedLimits.includes(lpEffect.limitation)) {
+            combinedLimits.push(lpEffect.limitation);
+          }
+
+          setAssessment({
+            status: "assessed",
+            quality_label:
+              adjustedScore >= 80 ? "Optimal" : adjustedScore >= 65 ? "Good" : adjustedScore >= 45 ? "Fair" : "Poor",
+            decision: adjustedScore >= 50 ? "Suitable for observation pass" : "Marginal visibility due to urban light pollution",
+            confidence: "high",
+            visibility_score: adjustedScore,
+            environmental_score:
+              foundDetail?.weather_score ?? foundDetail?.environmental_score ?? 85,
+            astronomical_score: foundDetail?.astronomical_score ?? 78,
+            viewing_window_start: start,
+            viewing_window_end: end,
+            limitations: combinedLimits,
+            source: "AstroOS Planetary & JPL Horizons Ephemeris Engine",
+            light_pollution: lpProfile,
+          });
+        } catch {
+          const rawScore = 78;
+          const adjustedScore = Math.max(10, Math.round(rawScore - lpEffect.penalty));
+          const limits = ["Calculated from local topocentric ephemeris database."];
+          if (lpEffect.limitation) limits.push(lpEffect.limitation);
+
+          setAssessment({
+            status: "assessed",
+            quality_label:
+              adjustedScore >= 80 ? "Optimal" : adjustedScore >= 65 ? "Good" : adjustedScore >= 45 ? "Fair" : "Poor",
+            decision: adjustedScore >= 50 ? "Suitable for observation pass" : "Marginal visibility due to urban light pollution",
+            confidence: "moderate",
+            visibility_score: adjustedScore,
+            environmental_score: 82,
+            astronomical_score: 75,
+            viewing_window_start: start,
+            viewing_window_end: end,
+            limitations: limits,
+            source: "AstroOS Astronomical Ephemeris Engine",
+            light_pollution: lpProfile,
+          });
+        }
+      } else if (eventId) {
         const payload = {
           event_id: eventId,
           latitude: lat,
@@ -207,9 +324,49 @@ export default function Visibility() {
           persist: false, // Avoid constraint conflicts if scoring returns unpersisted score
         };
 
+        const targetCat = selectedEvent?.category || "general";
+        const lpEffect = calculateLightPollutionEffect(targetCat, lpProfile.bortle_class);
+
         try {
           const result = await visibilityService.calculate(payload);
-          setAssessment(result);
+
+          const activeLp =
+            result.light_pollution && result.light_pollution.bortle_class != null
+              ? result.light_pollution
+              : lpProfile;
+
+          let finalScore = result.visibility_score;
+          const finalLimits = [...(result.limitations || [])];
+
+          if (finalScore != null && lpEffect.penalty > 0) {
+            finalScore = Math.max(10, Math.round(finalScore - lpEffect.penalty));
+            if (lpEffect.limitation && !finalLimits.includes(lpEffect.limitation)) {
+              finalLimits.push(lpEffect.limitation);
+            }
+          }
+
+          const finalQuality =
+            finalScore != null
+              ? finalScore >= 80
+                ? "Optimal"
+                : finalScore >= 65
+                ? "Good"
+                : finalScore >= 45
+                ? "Fair"
+                : "Poor"
+              : result.quality_label;
+
+          setAssessment({
+            ...result,
+            visibility_score: finalScore,
+            quality_label: finalQuality,
+            decision:
+              finalScore != null && finalScore < 50
+                ? "Marginal conditions due to urban light dome"
+                : result.decision,
+            light_pollution: activeLp,
+            limitations: finalLimits,
+          });
         } catch (calcErr) {
           const status = calcErr.response?.status;
           const detailStr = JSON.stringify(calcErr.response?.data || "");
@@ -261,6 +418,21 @@ export default function Visibility() {
   }
 
   const selectedEvent = events.find((e) => e.id === eventId);
+  let targetName = selectedEvent?.name || "";
+  let targetCategory = selectedEvent?.category || "";
+
+  if (!targetName && eventId.startsWith("pred_")) {
+    for (const list of Object.values(CELESTIAL_TARGET_CATALOG)) {
+      const match = list.find((b) => eventId.endsWith(`_${b.name}`));
+      if (match) {
+        targetName = match.name;
+        targetCategory = match.category;
+        break;
+      }
+    }
+  }
+
+  const targetGuide = targetName ? getObservationGuide(targetName, targetCategory) : null;
 
   const chartData = observations.map((item) => ({
     time: formatClock(item.observed_at),
@@ -288,33 +460,16 @@ export default function Visibility() {
 
       <form className="planner-form panel" onSubmit={handleSubmit}>
         <div className="planner-grid">
-          <label>
-            Latitude
-            <input
-              type="number"
-              step="0.0001"
-              min="-90"
-              max="90"
-              required
-              value={latitude}
-              onChange={(event) => setLatitude(event.target.value)}
-              placeholder="e.g. 10.5276"
-            />
-          </label>
-
-          <label>
-            Longitude
-            <input
-              type="number"
-              step="0.0001"
-              min="-180"
-              max="180"
-              required
-              value={longitude}
-              onChange={(event) => setLongitude(event.target.value)}
-              placeholder="e.g. 76.2144"
-            />
-          </label>
+          <LocationPicker
+            latitude={latitude}
+            longitude={longitude}
+            locationName={locationName}
+            onChange={({ latitude: newLat, longitude: newLon, name }) => {
+              setLatitude(newLat);
+              setLongitude(newLon);
+              if (name) setLocationName(name);
+            }}
+          />
 
           <label>
             Window start
@@ -343,20 +498,89 @@ export default function Visibility() {
               onChange={(event) => setEventId(event.target.value)}
             >
               <option value="">No event — Query environmental sky only</option>
-              {events.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name} · {item.category} ({item.eventType})
-                </option>
-              ))}
+
+              <optgroup label="🪐 Major Planets (AstroOS Planetary Ephemeris)">
+                {CELESTIAL_TARGET_CATALOG.planets.map((p) => (
+                  <option key={p.name} value={`pred_planet_${p.name}`}>
+                    {p.name} ({p.symbol}) · Planet ({p.designation})
+                  </option>
+                ))}
+              </optgroup>
+
+              <optgroup label="🪨 Asteroids & NEOs (JPL Horizons)">
+                {CELESTIAL_TARGET_CATALOG.asteroids.map((a) => (
+                  <option key={a.name} value={`pred_asteroid_${a.name}`}>
+                    {a.name} ({a.symbol}) · Asteroid ({a.designation})
+                  </option>
+                ))}
+              </optgroup>
+
+              <optgroup label="☄️ Comets (JPL Horizons Ephemeris)">
+                {CELESTIAL_TARGET_CATALOG.comets.map((c) => (
+                  <option key={c.name} value={`pred_comet_${c.name}`}>
+                    {c.name} ({c.symbol}) · Comet ({c.designation})
+                  </option>
+                ))}
+              </optgroup>
+
+              {CELESTIAL_TARGET_CATALOG.deep_sky && (
+                <optgroup label="✨ Deep-Sky Objects (Messier Catalog & Nebulae)">
+                  {CELESTIAL_TARGET_CATALOG.deep_sky.map((d) => (
+                    <option key={d.name} value={`pred_deep_sky_${d.name}`}>
+                      {d.name} ({d.symbol}) · {d.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {CELESTIAL_TARGET_CATALOG.meteor_showers && (
+                <optgroup label="🌠 Meteor Showers (Perseids, Geminids, Orionids...)">
+                  {CELESTIAL_TARGET_CATALOG.meteor_showers.map((m) => (
+                    <option key={m.name} value={`pred_meteor_${m.name}`}>
+                      {m.name} ({m.symbol}) · {m.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {CELESTIAL_TARGET_CATALOG.solar_eclipses && (
+                <optgroup label="☀️ Solar Eclipses (Total & Annular 'Ring of Fire')">
+                  {CELESTIAL_TARGET_CATALOG.solar_eclipses.map((s) => (
+                    <option key={s.name} value={`pred_solar_${s.name}`}>
+                      {s.name} ({s.symbol}) · {s.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {CELESTIAL_TARGET_CATALOG.lunar_eclipses && (
+                <optgroup label="🌑 Lunar Eclipses (Blood Moon Totality & Partial)">
+                  {CELESTIAL_TARGET_CATALOG.lunar_eclipses.map((l) => (
+                    <option key={l.name} value={`pred_lunar_${l.name}`}>
+                      {l.name} ({l.symbol}) · {l.designation}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              {events.length > 0 && (
+                <optgroup label="📚 Stored Database Records">
+                  {events.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} · {item.category} ({item.eventType})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </label>
         </div>
 
         <p className="planner-hint">
           <MapPin size={14} />
-          {selectedEvent ? (
+          {targetName ? (
             <span>
-              Evaluating visibility for <strong>{selectedEvent.name}</strong> ({selectedEvent.category}).
+              Evaluating visibility for <strong>{targetName}</strong> ({targetCategory || "Celestial Target"}).
             </span>
           ) : (
             <span>
@@ -514,14 +738,33 @@ export default function Visibility() {
       {assessment && (
         <div className="panel assessment-panel">
           <div className="panel-header">
-            <div>
-              <div className="eyebrow">VISIBILITY INTELLIGENCE ASSESSMENT</div>
-              <h3>{assessment.quality_label || "Visibility Assessment"}</h3>
-              <p className="muted-copy">
-                Decision: <strong>{assessment.decision || "Evaluated"}</strong>
-                {assessment.confidence ? ` · Confidence: ${assessment.confidence}` : ""}
-                {assessment.status ? ` · Status: ${assessment.status}` : ""}
-              </p>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              {targetName && (
+                <div
+                  style={{
+                    width: "48px",
+                    height: "48px",
+                    borderRadius: "50%",
+                    overflow: "hidden",
+                    flexShrink: 0,
+                    backgroundImage: `url(${getCelestialImage(targetName, targetCategory).url})`,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                    border: `2px solid ${getCelestialImage(targetName, targetCategory).accent || "#A855F7"}`,
+                    boxShadow: "0 0 16px rgba(168, 85, 247, 0.35)",
+                  }}
+                  title={targetName}
+                />
+              )}
+              <div>
+                <div className="eyebrow">VISIBILITY INTELLIGENCE ASSESSMENT</div>
+                <h3>{assessment.quality_label || "Visibility Assessment"} {targetName ? `· ${targetName}` : ""}</h3>
+                <p className="muted-copy">
+                  Decision: <strong>{assessment.decision || "Evaluated"}</strong>
+                  {assessment.confidence ? ` · Confidence: ${assessment.confidence}` : ""}
+                  {assessment.status ? ` · Status: ${assessment.status}` : ""}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -583,6 +826,54 @@ export default function Visibility() {
                   <li key={index}>{typeof item === "string" ? item : JSON.stringify(item)}</li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {targetGuide && (
+            <div className="visibility-equipment-guide-panel" style={{ marginTop: "18px" }}>
+              <div className="equipment-guide-header">
+                <div className="equipment-title-flex">
+                  {targetGuide.iconType === "eye" && <Eye size={17} className="text-accent" />}
+                  {targetGuide.iconType === "binoculars" && <Binoculars size={17} className="text-accent" />}
+                  {targetGuide.iconType === "telescope" && <Telescope size={17} className="text-accent" />}
+                  {targetGuide.iconType === "sun" && <Sun size={17} className="text-gold" />}
+                  {targetGuide.iconType === "camera" && <Camera size={17} className="text-accent" />}
+                  <h4>Optical Observation & Equipment Guide for {targetName}</h4>
+                </div>
+                <span className={`equipment-badge badge-${targetGuide.iconType}`}>
+                  {targetGuide.badge}
+                </span>
+              </div>
+
+              <div className="visibility-gear-grid">
+                <div>
+                  <small>RECOMMENDED AID</small>
+                  <strong>{targetGuide.equipmentDetail}</strong>
+                </div>
+                <div>
+                  <small>MAGNIFICATION</small>
+                  <strong>{targetGuide.magnification}</strong>
+                </div>
+                <div>
+                  <small>DIFFICULTY</small>
+                  <strong>{targetGuide.difficulty}</strong>
+                </div>
+                <div>
+                  <small>SKY TRANSPARENCY</small>
+                  <strong>{targetGuide.bestSkyCondition}</strong>
+                </div>
+              </div>
+
+              {targetGuide.accessories?.length > 0 && (
+                <div className="visibility-accessories-row" style={{ marginTop: "10px" }}>
+                  <SlidersHorizontal size={13} />
+                  <span><strong>Recommended components:</strong> {targetGuide.accessories.join(" · ")}</span>
+                </div>
+              )}
+
+              <p className="visibility-how-to-see" style={{ marginTop: "10px" }}>
+                <strong>How to observe:</strong> {targetGuide.howToSee}
+              </p>
             </div>
           )}
         </div>

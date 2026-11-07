@@ -33,6 +33,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from app.services.observation_duration_policy import resolve_event_duration
+
 # ---------------------------------------------------------------------------
 # Intelligence-layer import path setup (mirrors hathim_astronomy_adapter.py)
 # ---------------------------------------------------------------------------
@@ -141,11 +143,15 @@ def discover_eclipse_candidates(
             observer_latitude=latitude,
             observer_longitude=longitude,
             eclipse_kind="eclipse",          # both solar and lunar
-            required_duration_minutes=available_duration_minutes,
+            required_duration_minutes=resolve_event_duration("eclipse"),
             min_visibility_score=1.0,        # reject completely invisible eclipses
         )
         for p in passes:
             p.setdefault("category", "eclipse")
+            duration = resolve_event_duration("eclipse", p.get("required_duration_minutes") or p.get("duration_minutes"))
+            if duration is not None:
+                p["duration_minutes"] = duration
+                p["required_duration_minutes"] = duration
         logger.info(
             "catalog_event_discovery: %d eclipse candidate(s) found for session %s to %s",
             len(passes), session_start.isoformat(), session_end.isoformat(),
@@ -223,10 +229,14 @@ def discover_meteor_shower_candidates(
                 start_time=session_start,
                 stop_time=session_end,
                 twilight_mode="nautical",
-                required_duration_minutes=available_duration_minutes,
+                required_duration_minutes=resolve_event_duration("meteor_shower"),
             )
             for p in passes:
                 p.setdefault("category", "meteor_shower")
+                duration = resolve_event_duration("meteor_shower", p.get("required_duration_minutes") or p.get("duration_minutes"))
+                if duration is not None:
+                    p["duration_minutes"] = duration
+                    p["required_duration_minutes"] = duration
                 for field in ("window_start", "window_end"):
                     val = p.get(field)
                     if isinstance(val, str) and val.strip():
@@ -299,7 +309,7 @@ def discover_deep_sky_candidates(
     session_start = _ensure_utc_aware(session_start)
     session_end = _ensure_utc_aware(session_end)
 
-    req_dur = float(available_duration_minutes) if available_duration_minutes else 45.0
+    req_dur = resolve_event_duration("deep_sky")
     targets = dso_targets if dso_targets is not None else _DEFAULT_DSO_TARGETS
 
     scored_candidates: list[tuple[float, dict[str, Any]]] = []
@@ -319,6 +329,10 @@ def discover_deep_sky_candidates(
                 twilight_mode="astronomical",
             )
             for p in passes:
+                duration = resolve_event_duration("deep_sky", p.get("required_duration_minutes") or p.get("duration_minutes"))
+                if duration is not None:
+                    p["duration_minutes"] = duration
+                    p["required_duration_minutes"] = duration
                 score = float(p.get("visibility_score") or 0.0)
                 scored_candidates.append((score, p))
         except Exception as exc:

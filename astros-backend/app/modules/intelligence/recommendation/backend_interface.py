@@ -115,7 +115,7 @@ def evaluate_data_quality(
             "been verified."
         )
     else:
-        data_mode = "verified_astronomical_data"
+        data_mode = "unverified_data"
         quality_notes = (
             f"All {total} event(s) passed source verification and contain "
             "valid astronomical observation parameters."
@@ -460,19 +460,50 @@ def adapt_and_validate_request(
                 "missing 'visibility_score'",
                 "missing 'weather_score'",
                 "missing 'preference_score'",
+                "missing 'duration_minutes'",
+                "missing 'required_duration_minutes'",
             )
-            is_assessment_only = all(
-                any(k in err.lower() for k in score_error_keywords)
+
+            duration_window_error = next(
+                (
+                    err for err in event_errors
+                    if "Required duration exceeds total window span" in err
+                ),
+                None,
+            )
+
+            is_excludable = all(
+                (
+                    "Required duration exceeds total window span" in err
+                    or any(
+                        keyword in err.lower()
+                        for keyword in score_error_keywords
+                    )
+                )
                 for err in event_errors
             )
-            if is_assessment_only:
+
+            if is_excludable:
                 excluded_events.append({
-                    "event_id": event.get("event_id") if isinstance(event, dict) else None,
-                    "name": event.get("name") if isinstance(event, dict) else f"event_{index}",
+                    "event_id": (
+                        event.get("event_id") or event.get("id")
+                        if isinstance(event, dict)
+                        else None
+                    ),
+                    "name": (
+                        event.get("name", f"event_{index}")
+                        if isinstance(event, dict)
+                        else f"event_{index}"
+                    ),
+                    "reason": (
+                        duration_window_error
+                        or "Required assessment scores are unavailable."
+                    ),
                     "errors": event_errors,
                 })
             else:
                 errors.extend(event_errors)
+
         elif adapted_event is not None:
             adapted_events.append(adapted_event)
 
@@ -684,15 +715,16 @@ def validate_and_adapt_event(
                 )
 
     if session_start_dt and window_start_dt:
-        if (
-            is_timezone_aware(session_start_dt)
-            != is_timezone_aware(window_start_dt)
-        ):
-            errors.append(
-                f"{prefix} ({event_label}): Event window and session start "
-                "have mismatched timezone awareness."
-            )
+            if (
+                is_timezone_aware(session_start_dt)
+                != is_timezone_aware(window_start_dt)
+            ):
+                errors.append(
+                    f"{prefix} ({event_label}): Event window and session start "
+                    "have mismatched timezone awareness."
+                )
 
+    # Return validation errors before normalizing the event.
     if errors:
         return errors, None
 
@@ -703,11 +735,13 @@ def validate_and_adapt_event(
     adapted_event["required_duration_minutes"] = duration_value
     adapted_event["window_start"] = window_start_dt.isoformat()
     adapted_event["window_end"] = window_end_dt.isoformat()
+
     adapted_event["event_type"] = (
         ev.get("event_type") or ev.get("type") or "Celestial Target"
     )
     adapted_event["type"] = adapted_event["event_type"]
     adapted_event["source"] = ev.get("source", "Unknown Source")
+
     adapted_event["event_id"] = (
         ev.get("event_id") or ev.get("id") or f"target_{index + 1:03d}"
     )
@@ -845,15 +879,49 @@ def generate_recommendations(request: dict) -> dict:
     if adapted_request.get("excluded_events"):
         data_quality["excluded_events"] = adapted_request["excluded_events"]
 
+    excluded_events = adapted_request.get("excluded_events", [])
+
+    # The route records provenance counts before merging automatically discovered
+    # candidates. Direct callers default to treating their input list as client data.
+    origin_counts = raw_request.get("event_origin_counts")
+    if not isinstance(origin_counts, dict):
+        origin_counts = {
+            "client_events_received": len(raw_request.get("events") or raw_request.get("celestial_events") or []),
+            "events_discovered": 0,
+        }
+
+    client_events_received = origin_counts.get("client_events_received", 0)
+    events_discovered = origin_counts.get("events_discovered", 0)
+    for count_name, count_value in (
+        ("client_events_received", client_events_received),
+        ("events_discovered", events_discovered),
+    ):
+        if isinstance(count_value, bool) or not isinstance(count_value, int) or count_value < 0:
+            return {
+                "status": "error",
+                "ranked_events": [],
+                "recommendation": {"summary": {}, "schedule": [], "skipped_events": []},
+                "data_quality": data_quality,
+                "errors": [f"event_origin_counts.{count_name} must be a non-negative integer."],
+            }
+
+    total_events_received = client_events_received + events_discovered
+
+    
     if not events:
         return {
             "status": "empty",
             "ranked_events": [],
             "recommendation": {
                 "summary": {
+                    "client_events_received": client_events_received,
+                    "events_discovered": events_discovered,
+                    "total_events_received": total_events_received,
                     "total_events_evaluated": 0,
+                    "total_events_excluded": len(excluded_events),
                     "total_events_scheduled": 0,
                     "total_events_skipped": 0,
+                    "total_events_not_scheduled": len(excluded_events),
                     "user_available_minutes": duration,
                     "total_scheduled_minutes": 0.0,
                     "remaining_minutes": duration,
@@ -865,11 +933,15 @@ def generate_recommendations(request: dict) -> dict:
                 },
                 "schedule": [],
                 "skipped_events": [],
+                "excluded_events": excluded_events, 
                 "explanation_mode": "deterministic",
                 "explanations": {
                     "mode": "deterministic",
                     "schedule_summary": (
-                        "Observation schedule is empty: no events were evaluated."
+                        "Observation schedule is empty: all discovered candidates "
+                        "were excluded during validation."
+                        if excluded_events
+                        else "Observation schedule is empty: no events were provided or discovered."
                     ),
                     "event_explanations": {},
                     "llm_used": False,
@@ -879,22 +951,13 @@ def generate_recommendations(request: dict) -> dict:
             "errors": [],
         }
 
-    # Ranking and scheduling are delegated to the existing engine.
-    try:
-        pipeline_result = run_pipeline_recommendations(
-            events=events,
-            user_start_time=user_start,
-            total_available_duration_minutes=duration,
-            weights=weights,
-            session_end_time=session_info.get("session_end"),
-        )
-    except TypeError:
-        pipeline_result = run_pipeline_recommendations(
-            events=events,
-            user_start_time=user_start,
-            total_available_duration_minutes=duration,
-            weights=weights,
-        )
+    pipeline_result = run_pipeline_recommendations(
+        events=events,
+        user_start_time=user_start,
+        total_available_duration_minutes=duration,
+        weights=weights,
+        session_end_time=session_info.get("session_end"),
+    )
 
     explanation_result = explain_pipeline_output(
         pipeline_output=pipeline_result,
@@ -929,10 +992,31 @@ def generate_recommendations(request: dict) -> dict:
 
         schedule_out.append(scheduled_event)
 
+    # Events rejected by the optimizer after successful validation.
     skipped_out = [
-        dict(item) for item in pipeline_result["unscheduled_events"]
+         dict(item)
+        for item in pipeline_result["unscheduled_events"]
     ]
 
+    # Events excluded during backend validation.
+    excluded_out = [
+        dict(item)
+        for item in excluded_events
+    ]
+
+    # Keep scheduler skips distinct from validation exclusions.
+    scheduler_skipped_count = len(pipeline_result["unscheduled_events"])
+    summary_data["client_events_received"] = client_events_received
+    summary_data["events_discovered"] = events_discovered
+    summary_data["total_events_received"] = total_events_received
+    summary_data["total_events_evaluated"] = len(events)
+    summary_data["total_events_excluded"] = len(excluded_events)
+    summary_data["total_events_scheduled"] = len(schedule_out)
+    summary_data["total_events_skipped"] = scheduler_skipped_count
+    summary_data["total_events_not_scheduled"] = (
+        scheduler_skipped_count + len(excluded_events)
+    )
+    
     return {
         "status": "success",
         "ranked_events": ranked_events_out,
@@ -940,8 +1024,9 @@ def generate_recommendations(request: dict) -> dict:
             "summary": summary_data,
             "schedule": schedule_out,
             "skipped_events": skipped_out,
+            "excluded_events": excluded_out,
             "explanation_mode": explanation_result.get(
-                "mode", "deterministic"
+            "mode", "deterministic"
             ),
             "explanations": explanation_result,
         },

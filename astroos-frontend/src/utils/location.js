@@ -3,6 +3,7 @@ export const LOCATION_STORAGE_KEY = "astroos_observer_location";
 export const DEFAULT_LOCATION = {
   latitude: 10.5276,
   longitude: 76.2144,
+  name: "Thrissur, Kerala, India",
 };
 
 export function loadObserverLocation() {
@@ -12,8 +13,12 @@ export function loadObserverLocation() {
     const parsed = JSON.parse(raw);
     const latitude = Number(parsed.latitude);
     const longitude = Number(parsed.longitude);
+    const name =
+      typeof parsed.name === "string" && parsed.name.trim()
+        ? parsed.name
+        : DEFAULT_LOCATION.name;
     if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-      return { latitude, longitude };
+      return { latitude, longitude, name };
     }
   } catch {
     // Keep the default observer location if storage is unavailable.
@@ -22,5 +27,9 @@ export function loadObserverLocation() {
 }
 
 export function saveObserverLocation(location) {
-  localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(location));
+  try {
+    localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(location));
+  } catch {
+    // Keep silent if localStorage is unavailable
+  }
 }

@@ -2,21 +2,8 @@
 from typing import Any
 
 from app.models.celestial_event import CelestialEvent
+from app.services.observation_duration_policy import resolve_event_duration
 
-
-# Configurable defaults in minutes.
-# These are initial engineering defaults, not astronomy-derived values.
-DEFAULT_DURATION_MINUTES = {
-    "full_moon": 30,
-    "new_moon": 30,
-    "planet": 20,
-    "meteor_shower": 30,
-    "eclipse": 20,
-    "comet": 20,
-    "asteroid": 20,
-}
-
-FALLBACK_DURATION_MINUTES = 20
 
 SCORE_KEYS = (
     "visibility_score",
@@ -86,12 +73,22 @@ def adapt_celestial_event(
 
     event_type = (event.event_type or "").strip().lower()
 
-    if duration_override is not None:
-        duration = duration_override
-    else:
-        duration = DEFAULT_DURATION_MINUTES.get(
-            event_type,
-            FALLBACK_DURATION_MINUTES,
+    explicit_duration = duration_override
+    if explicit_duration is None:
+        explicit_duration = extra.get("required_duration_minutes")
+        if explicit_duration is None:
+            explicit_duration = extra.get("duration_minutes")
+
+    try:
+        duration = resolve_event_duration(event_type, explicit_duration)
+    except ValueError as exc:
+        errors.append(f"Event {event.id}: {exc}")
+        duration = None
+
+    if duration is None:
+        errors.append(
+            f"Event {event.id}: no duration is defined for event type "
+            f"'{event_type or 'unknown'}'; provide an explicit duration."
         )
 
     if (

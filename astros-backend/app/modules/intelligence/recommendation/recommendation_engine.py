@@ -30,13 +30,23 @@ def normalize_event_fields(event: Dict[str, Any]) -> Dict[str, Any]:
     Field mapping & defaults:
         - If 'start_time' is supplied without 'window_start', maps to 'window_start'.
         - If 'end_time' is supplied without 'window_end', maps to 'window_end'.
-        - If 'duration_minutes' is omitted but start and end are provided,
-          calculates the full window duration as default.
+        - Observation duration is never inferred from the visibility window.
+          Callers must resolve it through the shared duration policy first.
 
     Returns:
         A shallow copy of the event with standardized field names.
     """
     normalized = dict(event)
+
+    
+    # Normalize the explicit duration field.
+    # An existing duration_minutes value takes precedence.
+    if normalized.get("duration_minutes") is None:
+        required_duration = normalized.get("required_duration_minutes")
+
+        if required_duration is not None:
+             normalized["duration_minutes"] = required_duration
+
 
     # Normalize window start
     if "window_start" not in normalized and "start_time" in normalized:
@@ -46,16 +56,6 @@ def normalize_event_fields(event: Dict[str, Any]) -> Dict[str, Any]:
     if "window_end" not in normalized and "end_time" in normalized:
         normalized["window_end"] = normalized["end_time"]
 
-    # If duration_minutes is not explicitly set, attempt to derive it from window span
-    if "duration_minutes" not in normalized and "window_start" in normalized and "window_end" in normalized:
-        try:
-            start_dt = parse_datetime(normalized["window_start"], "window_start", normalized.get("name"))
-            end_dt = parse_datetime(normalized["window_end"], "window_end", normalized.get("name"))
-            if end_dt > start_dt:
-                normalized["duration_minutes"] = round((end_dt - start_dt).total_seconds() / 60.0, 2)
-        except Exception:
-            # Let downstream validator handle any format errors
-            pass
 
     return normalized
 
